@@ -19,12 +19,17 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # هذه الخطوة تصنع ملف التشغيل المفقود فوراً داخل السيرفر
+    # خطوة إنشاء ملف تشغيل الـ Gradle المفقود
     - name: Generate Missing Gradle Wrapper
       run: gradle wrapper
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
+
+    # خطوة ذكية لإنشاء ملف الـ Keystore المفقود تلقائياً لتخطي حماية التوقيع
+    - name: Generate Dummy Debug Keystore
+      run: |
+        keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
     - name: Build with Gradle Debug APK
       run: ./gradlew assembleDebug
