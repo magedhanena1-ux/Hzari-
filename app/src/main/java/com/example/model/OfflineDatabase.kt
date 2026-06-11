@@ -38,9 +38,53 @@ interface OfflineProductDao {
     suspend fun deleteAll()
 }
 
-@Database(entities = [OfflineProduct::class], version = 1, exportSchema = false)
+@Entity(tableName = "local_products")
+data class LocalProduct(
+    @PrimaryKey val id: String,
+    val name: String,
+    val barcode: String? = null,
+    val expiryDate: String, // YYYY-MM-DD
+    val location: String? = null,
+    val status: String? = null,
+    val stockQuantity: Int = 1,
+    val notes: String? = null,
+    val daysRemaining: Int? = null,
+    val colorStatus: String? = null,
+    val isSynced: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Dao
+interface LocalProductDao {
+    @Query("SELECT * FROM local_products ORDER BY createdAt DESC")
+    fun getAllLocalProducts(): Flow<List<LocalProduct>>
+
+    @Query("SELECT * FROM local_products ORDER BY createdAt DESC")
+    suspend fun getAllLocalProductsList(): List<LocalProduct>
+
+    @Query("SELECT * FROM local_products WHERE isSynced = 0 ORDER BY createdAt DESC")
+    suspend fun getUnsyncedProducts(): List<LocalProduct>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertProduct(product: LocalProduct)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertProducts(products: List<LocalProduct>)
+
+    @Query("DELETE FROM local_products WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM local_products WHERE isSynced = 1")
+    suspend fun deleteSyncedProducts()
+
+    @Query("DELETE FROM local_products")
+    suspend fun deleteAll()
+}
+
+@Database(entities = [OfflineProduct::class, LocalProduct::class], version = 2, exportSchema = false)
 abstract class OfflineDatabase : RoomDatabase() {
     abstract fun offlineProductDao(): OfflineProductDao
+    abstract fun localProductDao(): LocalProductDao
 
     companion object {
         @Volatile

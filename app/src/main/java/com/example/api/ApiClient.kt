@@ -27,7 +27,7 @@ interface HathariApiService {
         @Query("limit") limit: Int? = null
     ): Response<ItemsResponse>
 
-    @GET("my-products")
+    @GET(".")
     suspend fun getMyProducts(
         @Header("Authorization") authHeader: String,
         @Query("location") location: String? = null,
@@ -36,13 +36,13 @@ interface HathariApiService {
         @Query("archived") archived: Boolean? = null,
         @Query("limit") limit: Int? = null,
         @Query("cursor") cursor: String? = null
-    ): Response<ProductsResponse>
+    ): Response<okhttp3.ResponseBody>
 
-    @POST("products")
+    @POST(".")
     suspend fun uploadProduct(
         @Header("Authorization") authHeader: String,
         @Body productBody: Map<String, @JvmSuppressWildcards Any>
-    ): Response<ApiResponse>
+    ): Response<okhttp3.ResponseBody>
 
     @POST("products/bulk")
     suspend fun bulkUploadProducts(
@@ -133,11 +133,30 @@ object ApiClient {
     private const val KEY_USER = "hathari_user"
     private const val KEY_ROLE = "hathari_role"
 
+    // حقل مخصص لـ apikey أو Authorization لتمكين إدخال مفتاح أمان Supabase لاحقاً إذا تطلب الأمر
+    private const val SUPABASE_KEY = "" 
+
     private val logging = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BODY
     }
 
     private val okHttpClient = OkHttpClient.Builder()
+        .addInterceptor { chain ->
+            val builder = chain.request().newBuilder()
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+            
+            // تهيئة الحقل المخصص لـ apikey أو Authorization في الخلفية لتسهيل ربط مفتاح أمان الـ Supabase
+            if (SUPABASE_KEY.isNotEmpty()) {
+                builder.header("apikey", SUPABASE_KEY)
+                if (chain.request().header("Authorization") == null) {
+                    builder.header("Authorization", "Bearer $SUPABASE_KEY")
+                }
+            }
+            
+            val request = builder.build()
+            chain.proceed(request)
+        }
         .addInterceptor(logging)
         .build()
 
@@ -471,13 +490,38 @@ object ApiClient {
         }
     }
 
+    private fun parseProductsResponseSafely(json: String): List<Product> {
+        val moshi = com.squareup.moshi.Moshi.Builder().build()
+        // Try parsing first as ProductsResponse { success: Boolean, products: [...] }
+        try {
+            val adapter = moshi.adapter(ProductsResponse::class.java)
+            val result = adapter.fromJson(json)
+            if (result?.products != null) {
+                return result.products
+            }
+        } catch (e: Exception) {}
+
+        // Try parsing second as direct List<Product>
+        try {
+            val type = com.squareup.moshi.Types.newParameterizedType(List::class.java, Product::class.java)
+            val adapter = moshi.adapter<List<Product>>(type)
+            val result = adapter.fromJson(json)
+            if (result != null) {
+                return result
+            }
+        } catch (e: Exception) {}
+
+        return emptyList()
+    }
+
     suspend fun fetchMyProducts(context: Context, location: String? = null, limit: Int? = null): List<Product>? {
         val token = getToken(context) ?: return null
         return try {
             val header = getAuthHeader(token)
             val res = executeWithRetry { apiService.getMyProducts(header, location = location, limit = limit) }
             if (res.isSuccessful) {
-                res.body()?.products ?: emptyList()
+                val jsonString = res.body()?.string() ?: ""
+                parseProductsResponseSafely(jsonString)
             } else {
                 null
             }
@@ -491,20 +535,30 @@ object ApiClient {
         val header = getAuthHeader(token)
         
         val body = mutableMapOf<String, Any>()
+        // تضمين الحقول الأساسية المطلوبة بدقة: id, name, expiry_date, quantity
+        body["id"] = product.id ?: "local_" + java.util.UUID.randomUUID().toString()
         body["name"] = product.itemName
         body["item_name"] = product.itemName
         body["expiry_date"] = product.expiryDate
+        body["quantity"] = product.quantity ?: 1
+
         product.barcode?.let { body["barcode"] = it }
         product.location?.let { body["location"] = it }
         product.status?.let { body["status"] = it }
-        product.quantity?.let { body["quantity"] = it }
         product.notes?.let { body["notes"] = it }
         product.notes?.let { body["warehouse_note"] = it }
 
         return try {
             val res = executeWithRetry { apiService.uploadProduct(header, body) }
             if (res.isSuccessful) {
-                res.body() ?: ApiResponse(false, error = "فشل في تسجيل استجابة السيرفر")
+                val rawBody = res.body()?.string() ?: ""
+                try {
+                    val moshiObj = com.squareup.moshi.Moshi.Builder().build()
+                    val adapter = moshiObj.adapter(ApiResponse::class.java)
+                    adapter.fromJson(rawBody) ?: ApiResponse(true)
+                } catch (e: Exception) {
+                    ApiResponse(true)
+                }
             } else {
                 val errorBodyStr = res.errorBody()?.string()
                 val errorMsg = try {

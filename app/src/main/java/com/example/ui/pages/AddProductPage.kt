@@ -69,6 +69,8 @@ fun AddProductPage(
         scope.launch {
             try {
                 val db = com.example.model.OfflineDatabase.getDatabase(context)
+                
+                // Save to legacy offline products queue
                 val offlineProd = com.example.model.OfflineProduct(
                     itemName = product.itemName,
                     barcode = product.barcode,
@@ -79,6 +81,21 @@ fun AddProductPage(
                     notes = product.notes
                 )
                 db.offlineProductDao().insertOfflineProduct(offlineProd)
+                
+                // Save to new local products catalog (offline-first state)
+                val localProd = com.example.model.LocalProduct(
+                    id = "local_" + java.util.UUID.randomUUID().toString(),
+                    name = product.itemName,
+                    barcode = product.barcode,
+                    expiryDate = product.expiryDate,
+                    location = product.location,
+                    status = product.status,
+                    stockQuantity = product.quantity ?: 1,
+                    notes = product.notes,
+                    isSynced = false
+                )
+                db.localProductDao().insertProduct(localProd)
+
                 // Add to history
                 com.example.model.HistoryManager.addHistory(
                     context, 
@@ -698,39 +715,8 @@ fun AddProductPage(
                             notes = notes.trim().ifEmpty { null }
                         )
 
-                        submitLoading = true
-                        scope.launch {
-                            val apiResponse = ApiClient.uploadProduct(context, prod)
-                            submitLoading = false
-                            if (apiResponse.success) {
-                                // Add to history
-                                HistoryManager.addHistory(context, prod, success = true)
-
-                                val calculatedDaysMsg = if (daysRemaining != null) "$daysRemaining يوم" else "غير محدد"
-                                Toast.makeText(
-                                    context,
-                                    "تم رفع المنتج '${prod.itemName}' بنجاح! متبقي له $calculatedDaysMsg",
-                                    Toast.LENGTH_LONG
-                                ).show()
-
-                                // Clear whole form
-                                itemName = ""
-                                barcode = ""
-                                expiryDate = ""
-                                notes = ""
-                                quantityStr = "1"
-                                locationSelected = ""
-                                statusSelected = "متاح"
-                            } else {
-                                val errorDetail = apiResponse.error ?: apiResponse.message ?: "حدث خطأ غير متوقع"
-                                HistoryManager.addHistory(context, prod, success = false, errorMsg = errorDetail)
-                                Toast.makeText(context, "فشل الرفع للمنصة: $errorDetail", Toast.LENGTH_LONG).show()
-
-                                // Suggest offline saving on failure
-                                pendingOfflineProduct = prod
-                                showOfflineSuggestDialog = true
-                            }
-                        }
+                        // Save locally FIRST (instantly) to guarantee speed and 100% offline-readiness
+                        saveProductLocally(prod)
                     },
                     modifier = Modifier
                         .fillMaxWidth()

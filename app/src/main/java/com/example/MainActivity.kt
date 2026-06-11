@@ -25,6 +25,7 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         com.example.model.LanguageManager.init(applicationContext)
         com.example.ui.theme.ThemeConfig.loadTheme(applicationContext)
+        com.example.model.AutoSyncManager.setupWorkManager(applicationContext)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {

@@ -66,8 +66,33 @@ fun DashboardPage(
         }
     }
 
-    var products by remember { mutableStateOf<List<Product>>(emptyList()) }
-    var locations by remember { mutableStateOf<List<String>>(emptyList()) }
+    // Room database observation
+    val localProductDao = remember { com.example.model.OfflineDatabase.getDatabase(context).localProductDao() }
+    val localProductsCached by localProductDao.getAllLocalProducts().collectAsState(initial = emptyList())
+
+    val dbProductsMapped = remember(localProductsCached) {
+        localProductsCached.map { lp ->
+            Product(
+                id = lp.id,
+                itemName = lp.name,
+                barcode = lp.barcode,
+                expiryDate = lp.expiryDate,
+                location = lp.location,
+                status = lp.status,
+                quantity = lp.stockQuantity,
+                notes = lp.notes,
+                daysRemaining = lp.daysRemaining ?: com.example.api.BarcodeLookup.calculateDaysRemaining(lp.expiryDate),
+                colorStatus = lp.colorStatus ?: when (com.example.api.BarcodeLookup.calculateDaysRemaining(lp.expiryDate) ?: 999) {
+                    in Int.MIN_VALUE..10 -> "red"
+                    in 11..30 -> "yellow"
+                    else -> "green"
+                },
+                createdAt = null
+            )
+        }
+    }
+
+    var positionsFetched by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedLocation by remember { mutableStateOf<String?>(null) } // null means "All locations"
     var expiringItems by remember { mutableStateOf<List<PlatformItem>>(emptyList()) }
     
@@ -76,10 +101,27 @@ fun DashboardPage(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isOfflineMode by remember { mutableStateOf(false) }
 
+    // Map locations dynamically or from cache
+    val locations = remember(positionsFetched, dbProductsMapped) {
+        if (positionsFetched.isNotEmpty()) {
+            positionsFetched
+        } else {
+            dbProductsMapped.mapNotNull { it.location }.distinct()
+        }
+    }
+
+    val products = remember(dbProductsMapped, selectedLocation) {
+        if (selectedLocation != null) {
+            dbProductsMapped.filter { it.location == selectedLocation }
+        } else {
+            dbProductsMapped
+        }
+    }
+
     val loadData = {
         loading = true
         errorMessage = null
-        isOfflineMode = false
+        isOfflineMode = !com.example.model.AutoSyncManager.isNetworkAvailable(context)
         scope.launch {
             try {
                 // Proactively auto-sync pending offline products and pull platform data if online
@@ -88,87 +130,37 @@ fun DashboardPage(
                 // Read available platform branch locations
                 val fetchedLocations = ApiClient.fetchLocations(context)
                 if (fetchedLocations != null) {
-                    locations = fetchedLocations
+                    positionsFetched = fetchedLocations
                     com.example.model.OfflineCacheManager.saveLocationsCache(context, fetchedLocations)
                 } else {
-                    locations = com.example.model.OfflineCacheManager.loadLocationsCache(context)
+                    positionsFetched = com.example.model.OfflineCacheManager.loadLocationsCache(context)
                 }
 
-                // Call location products endpoint
-                val loadedProducts = ApiClient.fetchMyProducts(context, location = selectedLocation)
-                val loadedExpiring = ApiClient.fetchExpiringItems(context, location = selectedLocation, days = 30)
-
-                if (loadedProducts != null && loadedExpiring != null) {
-                    products = loadedProducts
-                    expiringItems = loadedExpiring
-                    isOfflineMode = false
-                    
-                    // Update cache for the current state
-                    if (selectedLocation == null) {
-                        com.example.model.OfflineCacheManager.saveMyProductsCache(context, loadedProducts)
+                // Call location products endpoint (handled gracefully if offline)
+                if (!isOfflineMode) {
+                    val loadedExpiring = ApiClient.fetchExpiringItems(context, location = selectedLocation, days = 30)
+                    if (loadedExpiring != null) {
+                        expiringItems = loadedExpiring
                         com.example.model.OfflineCacheManager.saveExpiringItemsCache(context, loadedExpiring)
                     }
-
-                    try {
-                        com.example.notification.NotificationHelper.evaluateAndNotify(context, loadedProducts)
-                    } catch (e: Exception) {
-                        // Fail-safe
-                    }
                 } else {
-                    // Fail fallback to cache
-                    val cachedProducts = com.example.model.OfflineCacheManager.loadMyProductsCache(context)
                     val cachedExpiring = com.example.model.OfflineCacheManager.loadExpiringItemsCache(context)
-
-                    if (cachedProducts.isNotEmpty() || cachedExpiring.isNotEmpty()) {
-                        products = if (selectedLocation != null) {
-                            cachedProducts.filter { it.location == selectedLocation }
-                        } else {
-                            cachedProducts
-                        }
-
-                        expiringItems = if (selectedLocation != null) {
-                            cachedExpiring.filter { it.location == selectedLocation }
-                        } else {
-                            cachedExpiring
-                        }
-
-                        isOfflineMode = true
-                        
-                        try {
-                            com.example.notification.NotificationHelper.notifyOfflineMode(context)
-                        } catch (e: Exception) {}
-                    } else {
-                        errorMessage = "تعذّر الاتصال بالشبكة وجلب البيانات، ولا توجد نسخة مخبأة محلياً بعد."
-                    }
-                }
-            } catch (e: Exception) {
-                val cachedProducts = com.example.model.OfflineCacheManager.loadMyProductsCache(context)
-                val cachedExpiring = com.example.model.OfflineCacheManager.loadExpiringItemsCache(context)
-
-                if (cachedProducts.isNotEmpty() || cachedExpiring.isNotEmpty()) {
-                    products = if (selectedLocation != null) {
-                        cachedProducts.filter { it.location == selectedLocation }
-                    } else {
-                        cachedProducts
-                    }
-
                     expiringItems = if (selectedLocation != null) {
                         cachedExpiring.filter { it.location == selectedLocation }
                     } else {
                         cachedExpiring
                     }
-
-                    isOfflineMode = true
-
-                    try {
-                        com.example.notification.NotificationHelper.notifyOfflineMode(context)
-                    } catch (ex: Exception) {}
+                }
+            } catch (e: Exception) {
+                isOfflineMode = true
+                val cachedExpiring = com.example.model.OfflineCacheManager.loadExpiringItemsCache(context)
+                expiringItems = if (selectedLocation != null) {
+                    cachedExpiring.filter { it.location == selectedLocation }
                 } else {
-                    errorMessage = "خطأ في الاتصال بالشبكة وجلب البيانات"
+                    cachedExpiring
                 }
             } finally {
                 loading = false
-                expiringItemsLoading = false
             }
         }
     }
