@@ -1,0 +1,61 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="512dp"
+    android:height="512dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <!-- Outer shield / warning border -->
+    <path
+        android:pathData="M256,40 L440,110 L440,250 C440,370 256,470 256,470 C256,470 72,370 72,250 L72,110 Z"
+        android:fillColor="#F59E0B"/>
+
+    <!-- Inner shield background -->
+    <path
+        android:pathData="M256,65 L412,125 L412,250 C412,350 256,435 256,435 C256,435 100,350 100,250 L100,125 Z"
+        android:fillColor="#0B132B"/>
+
+    <!-- Barcode columns -->
+    <!-- col 1 -->
+    <path
+        android:pathData="M150,140 L170,140 L170,290 L150,290 Z"
+        android:fillColor="#F59E0B"/>
+    <!-- col 2 -->
+    <path
+        android:pathData="M190,140 L200,140 L200,290 L190,290 Z"
+        android:fillColor="#F59E0B"/>
+    <!-- col 3 (thick) -->
+    <path
+        android:pathData="M220,140 L260,140 L260,290 L220,290 Z"
+        android:fillColor="#F59E0B"/>
+    <!-- col 4 -->
+    <path
+        android:pathData="M280,140 L295,140 L295,290 L280,290 Z"
+        android:fillColor="#F59E0B"/>
+    <!-- col 5 (thick) -->
+    <path
+        android:pathData="M315,140 L345,140 L345,290 L315,290 Z"
+        android:fillColor="#F59E0B"/>
+    <!-- col 6 -->
+    <path
+        android:pathData="M360,140 L370,140 L370,290 L360,290 Z"
+        android:fillColor="#F59E0B"/>
+
+    <!-- Red sweeping scanner laser -->
+    <path
+        android:pathData="M130,210 L382,210 L382,222 L130,222 Z"
+        android:fillColor="#EF4444"/>
+
+    <!-- Alert Badge Exclamation Circle at the bottom of inner shield -->
+    <path
+        android:pathData="M256,315 A32,32 0 1,1 256,379 A32,32 0 1,1 256,315"
+        android:fillColor="#EF4444"/>
+
+    <!-- Exclamation mark details -->
+    <path
+        android:pathData="M252,326 L260,326 L258,354 L254,354 Z"
+        android:fillColor="#FFFFFF"/>
+    <path
+        android:pathData="M256,362 A3.5,3.5 0 1,1 256,369 A3.5,3.5 0 1,1 256,362"
+        android:fillColor="#FFFFFF"/>
+
+</vector>

@@ -1,0 +1,6 @@
+{
+  "name": "حذاري Scanner",
+  "description": "منصة وواجهة مسح تتبع وإدارة صلاحية المنتجات والمخازن",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
