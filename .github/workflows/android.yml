@@ -17,16 +17,12 @@ jobs:
       with:
         node-version: '18'
 
-    - name: Find Project Root and Install Dependencies
+    - name: Install Dependencies
       run: |
-        # البحث التلقائي عن المجلد الذي يحتوي على ملف package.json لتفادي خطأ ENOENT
-        PROJECT_ROOT=$(find . -name "package.json" -not -path "*/node_modules/*" -exec dirname {} \; | head -n 1)
-        if [ -z "$PROJECT_ROOT" ]; then
-          echo "❌ خطأ: لم يتم العثور على ملف package.json في المستودع! تأكد من رفع ملفات مشروعك." && exit 1
+        # التأكد من وجود الملف قبل البدء لمنع توقف السيرفر
+        if [ ! -f "package.json" ]; then
+          echo "❌ خطأ: كود التطبيق غير مرفوع في هذا الفرع، يرجى رفع الملفات أولاً!" && exit 1
         fi
-        echo "PROJECT_PATH=$PROJECT_ROOT" >> $GITHUB_ENV
-        echo "✅ تم العثور على مجلد المشروع في: $PROJECT_ROOT"
-        cd "$PROJECT_ROOT"
         npm install --legacy-peer-deps
 
     - name: Set up JDK 17
@@ -38,25 +34,21 @@ jobs:
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
 
-    - name: Build Android APK
+    - name: Grant execute permission for gradlew
       run: |
-        cd "$PROJECT_PATH"
-        
-        # البحث التلقائي عن ملف gradlew لبناء التطبيق
-        GRADLEW_PATH=$(find . -name "gradlew" -not -path "*/node_modules/*" | head -n 1)
-        if [ -z "$GRADLEW_PATH" ] && [ -f "android/gradlew" ]; then
-          GRADLEW_PATH="android/gradlew"
+        if [ -f "android/gradlew" ]; then
+          chmod +x android/gradlew
+        elif [ -f "gradlew" ]; then
+          chmod +x gradlew
         fi
-        
-        if [ -z "$GRADLEW_PATH" ]; then
-          echo "❌ خطأ: لم يتم العثور على ملف gradlew الخاص بالأندرويد!" && exit 1
+
+    - name: Build Android APK (Debug)
+      run: |
+        if [ -d "android" ]; then
+          cd android && ./gradlew assembleDebug
+        else
+          ./gradlew assembleDebug
         fi
-        
-        GRADLE_DIR=$(dirname "$GRADLEW_PATH")
-        chmod +x "$GRADLEW_PATH"
-        
-        echo "🚀 بدء تجميع التطبيق من المجلد: $GRADLE_DIR"
-        cd "$GRADLE_DIR" && ./gradlew assembleDebug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
