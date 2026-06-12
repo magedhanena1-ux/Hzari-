@@ -237,6 +237,22 @@ fun AppNavigationHost() {
                 )
             }
         }
+
+        composable("admin_panel") {
+            AppLayout(
+                currentRoute = "admin_panel",
+                onNavigateToRoute = { route -> navController.navigate(route) },
+                onLogout = {
+                    navController.navigate("login") {
+                        popUpTo("dashboard") { inclusive = true }
+                    }
+                }
+            ) { innerPadding ->
+                com.example.ui.pages.AdminPanelPage(
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
+        }
     }
 
     if (!isAppUnlocked) {

@@ -3,6 +3,7 @@ package com.example.ui.pages
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -238,7 +239,7 @@ fun LoginPage(
                         loading = true
                         errorMessage = null
                         scope.launch {
-                            val result = ApiClient.testConnection(computedToken)
+                            val result = ApiClient.testConnection(computedToken, context)
                             loading = false
                             if (result.ok) {
                                 ApiClient.saveToken(
@@ -278,6 +279,230 @@ fun LoginPage(
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                     }
+                }
+
+                // Add Request Subscription Button & Registration Form Dialog
+                var showRegistrationDialog by remember { mutableStateOf(false) }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                TextButton(
+                    onClick = { showRegistrationDialog = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "طلب اشتراك جديد بالمنصة السحابية / المحلية",
+                        color = MaterialTheme.colorScheme.secondary,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                if (showRegistrationDialog) {
+                    var regName by remember { mutableStateOf("") }
+                    var regPhone by remember { mutableStateOf("") }
+                    var regWhatsapp by remember { mutableStateOf("") }
+                    var regEmail by remember { mutableStateOf("") }
+                    var regCompany by remember { mutableStateOf("") }
+                    var regUser by remember { mutableStateOf("") }
+                    var regPass by remember { mutableStateOf("") }
+                    var regDuration by remember { mutableStateOf("3_months") } // 3_months, 6_months, 1_year
+                    var regError by remember { mutableStateOf<String?>(null) }
+                    var regLoading by remember { mutableStateOf(false) }
+
+                    AlertDialog(
+                        onDismissRequest = { showRegistrationDialog = false },
+                        title = {
+                            Text(
+                                text = "طلب اشتراك جديد في حذاري",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Center
+                            )
+                        },
+                        text = {
+                            androidx.compose.foundation.lazy.LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 420.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                item {
+                                    Text(
+                                        text = "املأ البيانات أدناه لمراجعتها والموافقة عليها من قبل الإدارة لتفعيل حسابك.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(bottom = 8.dp)
+                                    )
+
+                                    if (regError != null) {
+                                        Text(
+                                            text = regError ?: "",
+                                            color = MaterialTheme.colorScheme.error,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.padding(bottom = 8.dp)
+                                        )
+                                    }
+                                }
+
+                                item {
+                                    OutlinedTextField(
+                                        value = regName,
+                                        onValueChange = { regName = it },
+                                        label = { Text("الاسم الكامل") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                item {
+                                    OutlinedTextField(
+                                        value = regPhone,
+                                        onValueChange = { regPhone = it },
+                                        label = { Text("الهاتف") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                item {
+                                    OutlinedTextField(
+                                        value = regWhatsapp,
+                                        onValueChange = { regWhatsapp = it },
+                                        label = { Text("واتساب") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                item {
+                                    OutlinedTextField(
+                                        value = regEmail,
+                                        onValueChange = { regEmail = it },
+                                        label = { Text("البريد الإلكتروني") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                item {
+                                    OutlinedTextField(
+                                        value = regCompany,
+                                        onValueChange = { regCompany = it },
+                                        label = { Text("اسم الشركة / المنشأة") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                item {
+                                    OutlinedTextField(
+                                        value = regUser,
+                                        onValueChange = { regUser = it },
+                                        label = { Text("اسم المستخدم المطلوب") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                item {
+                                    OutlinedTextField(
+                                        value = regPass,
+                                        onValueChange = { regPass = it },
+                                        label = { Text("كلمة المرور") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        modifier = Modifier.fillMaxWidth()
+                                        )
+                                }
+
+                                item {
+                                    Text(
+                                        text = "اختر الباقة المطلوبة:",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    )
+                                    
+                                    com.example.model.AppConfig.PLANS.forEach { plan ->
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { regDuration = plan.id }
+                                                .padding(vertical = 4.dp)
+                                        ) {
+                                            RadioButton(
+                                                selected = regDuration == plan.id,
+                                                onClick = { regDuration = plan.id }
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "${plan.name} (${plan.price} ريال YER)",
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                enabled = !regLoading,
+                                onClick = {
+                                    if (regName.trim().isEmpty() || regPhone.trim().isEmpty() || regUser.trim().isEmpty() || regPass.trim().isEmpty()) {
+                                        regError = "يرجى ملء جميع الحقول الإلزامية (الاسم، الهاتف، اسم المستخدم، كلمة المرور)"
+                                        return@Button
+                                    }
+                                    regLoading = true
+                                    regError = null
+                                    scope.launch {
+                                        try {
+                                            val database = com.example.model.OfflineDatabase.getDatabase(context)
+                                            val newRequest = com.example.model.SubscriptionRequest(
+                                                id = "req_" + java.util.UUID.randomUUID().toString(),
+                                                name = regName.trim(),
+                                                phone = regPhone.trim(),
+                                                whatsapp = regWhatsapp.trim().ifEmpty { regPhone.trim() },
+                                                email = regEmail.trim(),
+                                                companyName = regCompany.trim(),
+                                                username = regUser.trim(),
+                                                password = regPass.trim(),
+                                                duration = regDuration,
+                                                status = "PENDING"
+                                            )
+                                            database.subscriptionRequestDao().insertRequest(newRequest)
+                                            regLoading = false
+                                            Toast.makeText(
+                                                context,
+                                                "تم تسجيل طلبك بنجاح! يرجى الانتظار لحين الموافقة من الإدارة",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            showRegistrationDialog = false
+                                        } catch (e: Exception) {
+                                            regLoading = false
+                                            regError = "حدث خطأ أثناء إرسال الطلب: ${e.message}"
+                                        }
+                                    }
+                                }
+                            ) {
+                                if (regLoading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Text("تقديم الطلب")
+                                }
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showRegistrationDialog = false }) {
+                                Text("إلغاء")
+                            }
+                        }
+                    )
                 }
             }
         }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -31,13 +32,16 @@ import androidx.compose.ui.unit.sp
 import com.example.api.ApiClient
 import com.example.model.Product
 import com.example.model.PlatformItem
+import com.example.model.LocalProduct
+import com.example.model.OfflineDatabase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import java.util.UUID
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardPage(
     onNavigateToAddProduct: () -> Unit,
@@ -67,11 +71,13 @@ fun DashboardPage(
     }
 
     // Room database observation
-    val localProductDao = remember { com.example.model.OfflineDatabase.getDatabase(context).localProductDao() }
+    val db = remember { OfflineDatabase.getDatabase(context) }
+    val localProductDao = remember { db.localProductDao() }
     val localProductsCached by localProductDao.getAllLocalProducts().collectAsState(initial = emptyList())
 
+    // Filtered Products for mainstream view (Only active non-archived products!)
     val dbProductsMapped = remember(localProductsCached) {
-        localProductsCached.map { lp ->
+        localProductsCached.filter { it.isDamaged == 0 }.map { lp ->
             Product(
                 id = lp.id,
                 itemName = lp.name,
@@ -92,30 +98,49 @@ fun DashboardPage(
         }
     }
 
-    var positionsFetched by remember { mutableStateOf<List<String>>(emptyList()) }
+    // Archived Damaged Products (Only damaged products)
+    val damagedProducts = remember(localProductsCached) {
+        localProductsCached.filter { it.isDamaged == 1 }
+    }
+
     var selectedLocation by remember { mutableStateOf<String?>(null) } // null means "All locations"
     var expiringItems by remember { mutableStateOf<List<PlatformItem>>(emptyList()) }
     
     var loading by remember { mutableStateOf(true) }
-    var expiringItemsLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isOfflineMode by remember { mutableStateOf(false) }
 
-    // Map locations dynamically or from cache
-    val locations = remember(positionsFetched, dbProductsMapped) {
-        if (positionsFetched.isNotEmpty()) {
-            positionsFetched
-        } else {
-            dbProductsMapped.mapNotNull { it.location }.distinct()
-        }
+    // Map departments/locations dynamically derived from active products list
+    val locations = remember(dbProductsMapped) {
+        dbProductsMapped.mapNotNull { it.location }.distinct()
     }
 
-    val products = remember(dbProductsMapped, selectedLocation) {
+    // Warehouse state lists persisted locally via SharedPreferences
+    val listCustomWarehouses = remember { mutableStateListOf<String>() }
+    var selectedWarehouseFilter by remember { mutableStateOf<String?>("الجميع") }
+
+    fun refreshWarehouses() {
+        val list = getCustomWarehouses(context)
+        listCustomWarehouses.clear()
+        listCustomWarehouses.addAll(list)
+    }
+
+    LaunchedEffect(Unit) {
+        refreshWarehouses()
+    }
+
+    val productsFiltered = remember(dbProductsMapped, selectedLocation, selectedWarehouseFilter) {
+        var list = dbProductsMapped
         if (selectedLocation != null) {
-            dbProductsMapped.filter { it.location == selectedLocation }
-        } else {
-            dbProductsMapped
+            list = list.filter { it.location == selectedLocation }
         }
+        if (selectedWarehouseFilter != "الجميع" && selectedWarehouseFilter != null) {
+            list = list.filter {
+                val name = it.notes?.let { n -> extractWarehouse(n) } ?: "مخزن غير محدد"
+                it.notes?.contains("المستودع:") == true && name.contains(selectedWarehouseFilter!!)
+            }
+        }
+        list
     }
 
     val loadData = {
@@ -126,15 +151,6 @@ fun DashboardPage(
             try {
                 // Proactively auto-sync pending offline products and pull platform data if online
                 com.example.model.AutoSyncManager.startAutoSync(context)
-
-                // Read available platform branch locations
-                val fetchedLocations = ApiClient.fetchLocations(context)
-                if (fetchedLocations != null) {
-                    positionsFetched = fetchedLocations
-                    com.example.model.OfflineCacheManager.saveLocationsCache(context, fetchedLocations)
-                } else {
-                    positionsFetched = com.example.model.OfflineCacheManager.loadLocationsCache(context)
-                }
 
                 // Call location products endpoint (handled gracefully if offline)
                 if (!isOfflineMode) {
@@ -169,24 +185,43 @@ fun DashboardPage(
         loadData()
     }
 
+    // Unified dynamic local system alerting (nearing expiration <=30 days, or low stock <=5 units)
+    val localMergableAlertRecords = remember(dbProductsMapped) {
+        dbProductsMapped.filter { prod ->
+            val days = prod.daysRemaining ?: com.example.api.BarcodeLookup.calculateDaysRemaining(prod.expiryDate) ?: 999
+            days <= 30 || (prod.quantity ?: 1) <= 5
+        }.sortedWith(
+            compareBy<Product> { it.daysRemaining ?: 999 }
+            .thenBy { it.quantity ?: 0 }
+        )
+    }
+
     // Statistics metrics based on current loaded products
     val getDays: (Product) -> Int = { prod ->
         prod.daysRemaining ?: com.example.api.BarcodeLookup.calculateDaysRemaining(prod.expiryDate) ?: 999
     }
-    val totalCount = products.size
-    val count10 = products.count { getDays(it) in 0..10 }
-    val count20 = products.count { getDays(it) in 11..20 }
-    val count30 = products.count { getDays(it) in 21..30 }
-    val safeCount = products.count { getDays(it) > 30 }
-    val expiredCount = products.count { getDays(it) < 0 }
-    val spoiledCount = products.count {
-        it.location == "قسم التوالف" || 
-        it.status == "تم إدخالها إلى قسم التوالف" || 
-        it.status == "في حالة المراجعة / تم الرفع" || 
-        it.status?.contains("توالف") == true
-    }
+    val totalCount = dbProductsMapped.size
+    val count10 = dbProductsMapped.count { getDays(it) in 0..10 }
+    val count20 = dbProductsMapped.count { getDays(it) in 11..20 }
+    val count30 = dbProductsMapped.count { getDays(it) in 21..30 }
+    val safeCount = dbProductsMapped.count { getDays(it) > 30 }
+    val expiredCount = dbProductsMapped.count { getDays(it) < 0 }
+    val spoiledCount = damagedProducts.size
 
     var activeTab by remember { mutableStateOf(0) }
+
+    // Dialogs States
+    var showCreateWarehouseDialog by remember { mutableStateOf(false) }
+    var showRenameWarehouseDialog by remember { mutableStateOf(false) }
+    var newWarehouseNameInput by remember { mutableStateOf("") }
+    var renameWarehouseOldName by remember { mutableStateOf("") }
+    var renameWarehouseNewNameInput by remember { mutableStateOf("") }
+
+    var productPendingMove by remember { mutableStateOf<Product?>(null) }
+    var productPendingDamagedArchive by remember { mutableStateOf<Product?>(null) }
+
+    var damageQuantityInput by remember { mutableStateOf("") }
+    var damageNotesInput by remember { mutableStateOf("") }
 
     Column(
         modifier = modifier
@@ -235,8 +270,7 @@ fun DashboardPage(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .testTag("offline_mode_banner"),
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)),
                 shape = RoundedCornerShape(12.dp)
             ) {
@@ -267,7 +301,7 @@ fun DashboardPage(
             }
         }
 
-        // Modern Tab Row to separate "الرئيسية والتقارير" / "مستودع المخازن والمنتجات"
+        // Expanded M3 Tab Row with three cohesive sections (Main, Warehouses, Damaged)
         TabRow(
             selectedTabIndex = activeTab,
             containerColor = MaterialTheme.colorScheme.surface,
@@ -280,10 +314,10 @@ fun DashboardPage(
                 text = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Home, contentDescription = "", modifier = Modifier.size(18.dp))
-                        Text("الرئيسية والتقارير", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                        Icon(imageVector = Icons.Default.Home, contentDescription = "", modifier = Modifier.size(16.dp))
+                        Text("الرئيسية والتقارير", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
                     }
                 }
             )
@@ -293,10 +327,23 @@ fun DashboardPage(
                 text = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.Inventory, contentDescription = "", modifier = Modifier.size(18.dp))
-                        Text("مستودع المخازن", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                        Icon(imageVector = Icons.Default.Store, contentDescription = "", modifier = Modifier.size(16.dp))
+                        Text("المخازن والمستودعات", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            )
+            Tab(
+                selected = activeTab == 2,
+                onClick = { activeTab = 2 },
+                text = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.DeleteSweep, contentDescription = "", modifier = Modifier.size(16.dp))
+                        Text("سجل التوالف ($spoiledCount)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
                     }
                 }
             )
@@ -306,9 +353,7 @@ fun DashboardPage(
         Box(modifier = Modifier.weight(1f)) {
             if (activeTab == 0) {
                 LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("dashboard_root"),
+                    modifier = Modifier.fillMaxSize().testTag("dashboard_root"),
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
@@ -358,9 +403,7 @@ fun DashboardPage(
                                 shape = RoundedCornerShape(16.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(16.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
@@ -434,7 +477,7 @@ fun DashboardPage(
                                         modifier = Modifier.weight(1f)
                                     )
                                     StatCard(
-                                        title = "قسم التوالف / المراجعة",
+                                        title = "إجمالي التوالف",
                                         value = spoiledCount.toString(),
                                         color = Color(0xFF94A3B8),
                                         icon = Icons.Default.DeleteSweep,
@@ -454,7 +497,7 @@ fun DashboardPage(
                                         modifier = Modifier.weight(1f)
                                     )
                                     StatCard(
-                                        title = "خلال 10 أيام 🔴",
+                                        title = "حد الخطر (10 أيام)",
                                         value = count10.toString(),
                                         color = Color(0xFFEF4444),
                                         icon = Icons.Default.Warning,
@@ -478,19 +521,6 @@ fun DashboardPage(
                                         value = count30.toString(),
                                         color = Color(0xFF3B82F6),
                                         icon = Icons.Default.Info,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                                FlowRow(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    maxItemsInEachRow = 2
-                                ) {
-                                    StatCard(
-                                        title = "سليمة (أبعد من 30) 🟢",
-                                        value = safeCount.toString(),
-                                        color = Color(0xFF22C55E),
-                                        icon = Icons.Default.CheckCircle,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
@@ -539,51 +569,53 @@ fun DashboardPage(
                             }
                         }
 
-                        // 1. New Section: Expiring Items Near Date (الأصناف المقربة من الانتهاء)
-                        if (expiringItems.isNotEmpty()) {
-                            item {
+                        // Local System Unified Merged Report Block (High Risk or Expiration Underway)
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 16.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.ReportProblem,
-                                            contentDescription = "المنتجات قريبة الانتهاء",
-                                            tint = Color(0xFFEF4444)
-                                        )
-                                        Text(
-                                            text = "أصناف مقربة من الانتهاء (30 يوم) ⚠️",
-                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = Color(0xFFEF4444)
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { sharePlatformItemsCsv(context, expiringItems) }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Share,
-                                            contentDescription = "تصدير أصناف قريبة الانتهاء",
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = "قائمة التحذيرات والرقابة",
+                                        tint = Color(0xFFEF4444)
+                                    )
+                                    Text(
+                                        text = "تقرير الأصناف قريبة الانتهاء وحد الخطر ⚠️",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = Color(0xFFEF4444)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { shareProductsCsv(context, localMergableAlertRecords) }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Share,
+                                        contentDescription = "تصدير التفرير بالكامل",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
                                 }
                             }
+                        }
 
-                            items(expiringItems) { platformItem ->
-                                ExpiringItemCard(platformItem)
+                        if (localMergableAlertRecords.isNotEmpty()) {
+                            items(localMergableAlertRecords) { rec ->
+                                ProductRowCard(
+                                    product = rec,
+                                    onMoveWarehouse = { productPendingMove = it },
+                                    onArchiveDamaged = { productPendingDamagedArchive = it }
+                                )
                             }
                         } else {
                             item {
                                 Card(
-                                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.08f))
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f))
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(16.dp),
@@ -592,7 +624,7 @@ fun DashboardPage(
                                     ) {
                                         Icon(imageVector = Icons.Default.CheckCircle, contentDescription = "", tint = Color(0xFF22C55E))
                                         Text(
-                                            text = "لا تتوفر أصناف منتهية أو قاربت على الانتهاء حالياً 🎉",
+                                            text = "جميع الأقسام والأصناف في حالة ممتازة وسليمة حالياً! 🎉",
                                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
@@ -602,141 +634,227 @@ fun DashboardPage(
                         }
                     }
                 }
-            } else {
+            } else if (activeTab == 1) {
+                // TAB 1: SMART WAREHOUSE MANAGEMENT WITH FULL LOCAL CRUD & CHIPS SELECTOR
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    if (loading) {
-                        item {
-                            Column(
-                                verticalArrangement = Arrangement.spacedBy(12.dp),
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp)
-                            ) {
-                                SkeletonCard(height = 90.dp)
-                                SkeletonCard(height = 200.dp)
-                            }
-                        }
-                    } else if (errorMessage != null) {
-                        item {
-                            Text(text = errorMessage ?: "", color = MaterialTheme.colorScheme.error)
-                        }
-                    } else {
-                        // Branch Store / Location Filter chips (Horizontal Scroll bar)
-                        if (locations.isNotEmpty()) {
-                            item {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.FilterList,
-                                            contentDescription = "",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = "تصفية حسب الفرع / المخزن:",
-                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState())
-                                            .padding(vertical = 4.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        FilterChip(
-                                            selected = selectedLocation == null,
-                                            onClick = { selectedLocation = null },
-                                            label = { Text("الجميع", fontWeight = FontWeight.Bold) },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                                                containerColor = MaterialTheme.colorScheme.surface,
-                                                labelColor = MaterialTheme.colorScheme.onSurface
-                                            )
-                                        )
-
-                                        locations.forEach { loc ->
-                                            FilterChip(
-                                                selected = selectedLocation == loc,
-                                                onClick = { selectedLocation = loc },
-                                                label = { Text(loc, fontWeight = FontWeight.Bold) },
-                                                colors = FilterChipDefaults.filterChipColors(
-                                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                                                    containerColor = MaterialTheme.colorScheme.surface,
-                                                    labelColor = MaterialTheme.colorScheme.onSurface
-                                                )
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Recent Products list header
-                        item {
+                    item {
+                        // Warehouse controls bar
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(8.dp)
+                        ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 8.dp),
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "كافة منتجات الفرع / المخزن المحدد:",
+                                    text = "إدارة مستودعات المخازن",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.primary
                                 )
-                                IconButton(
-                                    onClick = { shareProductsCsv(context, products) }
+                                Button(
+                                    onClick = { showCreateWarehouseDialog = true },
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Share,
-                                        contentDescription = "تصدير كافة المنتجات",
-                                        tint = MaterialTheme.colorScheme.primary
+                                    Icon(imageVector = Icons.Default.Add, contentDescription = "", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("مستودع جديد", fontSize = 12.sp)
+                                }
+                            }
+
+                            // Dynamic Selector Scrolling Chippy list
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = selectedWarehouseFilter == "الجميع",
+                                    onClick = { selectedWarehouseFilter = "الجميع" },
+                                    label = { Text("الجميع (${dbProductsMapped.size})") }
+                                )
+                                FilterChip(
+                                    selected = selectedWarehouseFilter == "مخزن غير محدد",
+                                    onClick = { selectedWarehouseFilter = "مخزن غير محدد" },
+                                    label = { Text("غير محدد (${dbProductsMapped.count { it.notes?.contains("المستودع:") != true }})") }
+                                )
+                                listCustomWarehouses.forEach { wh ->
+                                    val count = dbProductsMapped.count { 
+                                        it.notes?.contains("المستودع:") == true && extractWarehouse(it.notes).contains(wh)
+                                    }
+                                    FilterChip(
+                                        selected = selectedWarehouseFilter == wh,
+                                        onClick = { selectedWarehouseFilter = wh },
+                                        label = { Text("$wh ($count)") }
                                     )
                                 }
                             }
-                        }
 
-                        if (products.isEmpty()) {
-                            item {
-                                Card(
+                            // Rename / Delete Actions if a custom warehouse is selected
+                            if (selectedWarehouseFilter != "الجميع" && selectedWarehouseFilter != "مخزن غير محدد" && selectedWarehouseFilter != null) {
+                                Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(24.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    OutlinedButton(
+                                        onClick = {
+                                            renameWarehouseOldName = selectedWarehouseFilter!!
+                                            renameWarehouseNewNameInput = selectedWarehouseFilter!!
+                                            showRenameWarehouseDialog = true
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.HourglassEmpty,
-                                            contentDescription = "",
-                                            modifier = Modifier.size(48.dp),
-                                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                                        )
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        Text(
-                                            text = "لا توجد منتجات مسجلة في الفرع المحدد حالياً.",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                        )
+                                        Icon(imageVector = Icons.Default.Edit, contentDescription = "", modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("تعديل الاسم", fontSize = 12.sp)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val name = selectedWarehouseFilter!!
+                                            deleteCustomWarehouse(context, name)
+                                            selectedWarehouseFilter = "الجميع"
+                                            refreshWarehouses()
+                                            Toast.makeText(context, "تم حذف المستودع بنجاح", Toast.LENGTH_SHORT).show()
+                                        },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Icon(imageVector = Icons.Default.Delete, contentDescription = "", modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("إزالة المستودع", fontSize = 12.sp)
                                     }
                                 }
                             }
-                        } else {
-                            items(products) { item ->
-                                ProductRowCard(product = item)
+                        }
+                    }
+
+                    // Listed Items filtered under the active warehouse
+                    if (productsFiltered.isEmpty()) {
+                        item {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(48.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Default.Storefront, "", modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text("لا توجد منتجات مسجلة في هذا المستودع حالياً.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), textAlign = TextAlign.Center)
+                            }
+                        }
+                    } else {
+                        items(productsFiltered) { prod ->
+                            ProductRowCard(
+                                product = prod,
+                                onMoveWarehouse = { productPendingMove = it },
+                                onArchiveDamaged = { productPendingDamagedArchive = it }
+                            )
+                        }
+                    }
+                }
+            } else if (activeTab == 2) {
+                // TAB 2: DETAILED ARCHIVED DAMAGED GOODS
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.15f)),
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.DeleteSweep, contentDescription = "", tint = MaterialTheme.colorScheme.error)
+                                Column {
+                                    Text("قسم وبنك التوالف التابعة للرقابة", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                                    Text("تعتبر هذه السجلات معزولة كلياً من الجرد العام ومخزون التشغيل للمستودعات.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+
+                    if (damagedProducts.isEmpty()) {
+                        item {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(48.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Default.DoneAll, "", modifier = Modifier.size(48.dp), tint = Color(0xFF22C55E))
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text("قائمة التوالف فارغة حالياً. لا توجد أي مخاسر مسجلة.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), textAlign = TextAlign.Center)
+                            }
+                        }
+                    } else {
+                        items(damagedProducts) { item ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.2f)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(text = item.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                                        Box(
+                                            modifier = Modifier
+                                                .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(text = "تالف ومرحل", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+
+                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column {
+                                            Text(text = "الكمية التالفة: ${item.damagedQuantity} وحدات", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                                            Text(text = "تاريخ الترحيل والفرز: ${item.damagedDate ?: "-"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                scope.launch {
+                                                    localProductDao.deleteById(item.id)
+                                                    Toast.makeText(context, "تم مسح سجل التالف نهائياً", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        ) {
+                                            Icon(imageVector = Icons.Default.Delete, contentDescription = "مسح", tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f))
+                                        }
+                                    }
+
+                                    if (!item.notes.isNullOrEmpty()) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                                                .padding(8.dp)
+                                        ) {
+                                            Text(text = item.notes, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -744,6 +862,293 @@ fun DashboardPage(
             }
         }
     }
+
+    // dialogs implementation
+
+    // 1. Create Warehouse Dialog
+    if (showCreateWarehouseDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateWarehouseDialog = false },
+            title = { Text("إنشاء مستودع مخازن جديد") },
+            text = {
+                OutlinedTextField(
+                    value = newWarehouseNameInput,
+                    onValueChange = { newWarehouseNameInput = it },
+                    label = { Text("اسم المستودع") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newWarehouseNameInput.isNotBlank()) {
+                            addCustomWarehouse(context, newWarehouseNameInput.trim())
+                            newWarehouseNameInput = ""
+                            showCreateWarehouseDialog = false
+                            refreshWarehouses()
+                            Toast.makeText(context, "تمت إضافة المستودع بنجاح", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Text("إضافة")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateWarehouseDialog = false }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // 2. Rename Warehouse Dialog
+    if (showRenameWarehouseDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameWarehouseDialog = false },
+            title = { Text("تعديل اسم المستودع") },
+            text = {
+                OutlinedTextField(
+                    value = renameWarehouseNewNameInput,
+                    onValueChange = { renameWarehouseNewNameInput = it },
+                    label = { Text("الاسم الجديد") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (renameWarehouseNewNameInput.isNotBlank()) {
+                            val newName = renameWarehouseNewNameInput.trim()
+                            scope.launch {
+                                localProductsCached.forEach { lp ->
+                                    if (lp.notes?.contains("المستودع: $renameWarehouseOldName") == true) {
+                                        val updatedNotes = lp.notes.replace("المستودع: $renameWarehouseOldName", "المستودع: $newName")
+                                        localProductDao.insertProduct(lp.copy(notes = updatedNotes, isSynced = false))
+                                    }
+                                }
+                                deleteCustomWarehouse(context, renameWarehouseOldName)
+                                addCustomWarehouse(context, newName)
+                                selectedWarehouseFilter = newName
+                                showRenameWarehouseDialog = false
+                                refreshWarehouses()
+                                Toast.makeText(context, "تم تحديث اسم المستودع بنجاح", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text("حفظ")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameWarehouseDialog = false }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // 3. Move Product warehouse dialog coordinator
+    if (productPendingMove != null) {
+        var dropdownExpanded by remember { mutableStateOf(false) }
+        var selectedWhMove by remember { mutableStateOf("المستودع الرئيسي") }
+        AlertDialog(
+            onDismissRequest = { productPendingMove = null },
+            title = { Text("تغيير ونقل مستودع الصنف") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(text = "الصنف المحدد: ${productPendingMove!!.itemName}", fontWeight = FontWeight.Bold)
+                    Text(text = "اختر المستودع الوجهة لنقل وتوطين هذا الصنف إليه:")
+                    
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { dropdownExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(text = selectedWhMove)
+                        }
+                        DropdownMenu(
+                            expanded = dropdownExpanded,
+                            onDismissRequest = { dropdownExpanded = false },
+                            modifier = Modifier.fillMaxWidth(0.8f)
+                        ) {
+                            listCustomWarehouses.forEach { wh ->
+                                DropdownMenuItem(
+                                    text = { Text(wh) },
+                                    onClick = {
+                                        selectedWhMove = wh
+                                        dropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val prod = productPendingMove!!
+                        scope.launch {
+                            val lpOriginal = localProductsCached.find { it.id == prod.id }
+                            if (lpOriginal != null) {
+                                val currentNotes = lpOriginal.notes ?: ""
+                                val cleanedNotes = if (currentNotes.contains("المستودع:")) {
+                                    currentNotes.replace(Regex("المستودع:\\s*[^\\n]*"), "المستودع: $selectedWhMove")
+                                } else {
+                                    "$currentNotes\nالمستودع: $selectedWhMove".trim()
+                                }
+                                localProductDao.insertProduct(lpOriginal.copy(notes = cleanedNotes, isSynced = false))
+                                Toast.makeText(context, "تم نقل الصنف إلى $selectedWhMove", Toast.LENGTH_SHORT).show()
+                            }
+                            productPendingMove = null
+                        }
+                    }
+                ) {
+                    Text("نقل وتسكين")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { productPendingMove = null }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+
+    // 4. Archive Product to Damaged Goods coordinates
+    if (productPendingDamagedArchive != null) {
+        val original = productPendingDamagedArchive!!
+        val maxQty = original.quantity ?: 1
+        AlertDialog(
+            onDismissRequest = { productPendingDamagedArchive = null },
+            title = { Text("ترحيل وإتلاف صنف للمراجعة 🔴") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(text = "اسم الصنف: ${original.itemName}", fontWeight = FontWeight.Bold)
+                    Text(text = "الكمية المتاحة حالياً بالجرد: $maxQty", style = MaterialTheme.typography.bodySmall)
+                    
+                    OutlinedTextField(
+                        value = damageQuantityInput,
+                        onValueChange = { damageQuantityInput = it },
+                        label = { Text("الكمية التالفة") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = damageNotesInput,
+                        onValueChange = { damageNotesInput = it },
+                        label = { Text("أسباب وتفاصيل الإتلاف") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val enteredQty = damageQuantityInput.toIntOrNull()
+                        if (enteredQty == null || enteredQty <= 0 || enteredQty > maxQty) {
+                            Toast.makeText(context, "يرجى إدخال كمية صالحة لا تزيد عن $maxQty", Toast.LENGTH_SHORT).show()
+                        } else {
+                            scope.launch {
+                                val lpOriginal = localProductsCached.find { it.id == original.id }
+                                if (lpOriginal != null) {
+                                    val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Calendar.getInstance().time)
+                                    
+                                    // 1. Create a isolated record with isDamaged = 1
+                                    val damagedReceipt = LocalProduct(
+                                        id = UUID.randomUUID().toString(),
+                                        name = lpOriginal.name,
+                                        barcode = lpOriginal.barcode,
+                                        expiryDate = lpOriginal.expiryDate,
+                                        location = lpOriginal.location,
+                                        status = "تالف ومفرز",
+                                        stockQuantity = 0,
+                                        notes = "دواعي التلف: " + damageNotesInput.trim(),
+                                        daysRemaining = lpOriginal.daysRemaining,
+                                        colorStatus = "red",
+                                        warehouseName = lpOriginal.warehouseName,
+                                        isDamaged = 1,
+                                        damagedDate = todayStr,
+                                        damagedQuantity = enteredQty,
+                                        isSynced = false
+                                    )
+                                    localProductDao.insertProduct(damagedReceipt)
+
+                                    // 2. Reduce the original product active count
+                                    val remain = lpOriginal.stockQuantity - enteredQty
+                                    if (remain <= 0) {
+                                        localProductDao.deleteById(lpOriginal.id)
+                                    } else {
+                                        localProductDao.insertProduct(lpOriginal.copy(stockQuantity = remain, isSynced = false))
+                                    }
+
+                                    // 3. Post to Supabase server in the background
+                                    try {
+                                        val prodToSend = Product(
+                                            id = damagedReceipt.id,
+                                            itemName = damagedReceipt.name,
+                                            barcode = damagedReceipt.barcode,
+                                            expiryDate = damagedReceipt.expiryDate,
+                                            location = damagedReceipt.location,
+                                            status = damagedReceipt.status,
+                                            quantity = 0,
+                                            notes = "DAMAGE_REPORT: count=${damagedReceipt.damagedQuantity}, cause=${damageNotesInput.trim()}"
+                                        )
+                                        ApiClient.uploadProduct(context, prodToSend)
+                                    } catch (e: Exception) {
+                                        // Ignore and let sync manager handle offline sync later
+                                    }
+
+                                    Toast.makeText(context, "تم تصفية وترحيل الكمية بنجاح للتوالف", Toast.LENGTH_SHORT).show()
+                                }
+                                productPendingDamagedArchive = null
+                                damageQuantityInput = ""
+                                damageNotesInput = ""
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("تأكيد الترحيل الأحمر")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { productPendingDamagedArchive = null }) {
+                    Text("إلغاء")
+                }
+            }
+        )
+    }
+}
+
+// Helper methods for parsing warehouse labels stored inside notes
+private fun extractWarehouse(notes: String): String {
+    val regex = Regex("المستودع:\\s*([^\\n]*)")
+    val match = regex.find(notes)
+    return match?.groupValues?.get(1)?.trim() ?: "مخزن غير محدد"
+}
+
+// Warehouse collection preferences manager
+private fun getCustomWarehouses(context: Context): List<String> {
+    val prefs = context.getSharedPreferences("hzari_warehouses_v2", Context.MODE_PRIVATE)
+    val set = prefs.getStringSet("warehouses_set", setOf("المستودع الرئيسي", "مستودع الأدوية", "مستودع المبردات")) ?: emptySet()
+    return set.toList().sorted()
+}
+
+private fun addCustomWarehouse(context: Context, name: String) {
+    val prefs = context.getSharedPreferences("hzari_warehouses_v2", Context.MODE_PRIVATE)
+    val set = prefs.getStringSet("warehouses_set", setOf("المستودع الرئيسي", "مستودع الأدوية", "مستودع المبردات"))?.toMutableSet() ?: mutableSetOf()
+    set.add(name)
+    prefs.edit().putStringSet("warehouses_set", set).apply()
+}
+
+private fun deleteCustomWarehouse(context: Context, name: String) {
+    val prefs = context.getSharedPreferences("hzari_warehouses_v2", Context.MODE_PRIVATE)
+    val set = prefs.getStringSet("warehouses_set", setOf("المستودع الرئيسي", "مستودع الأدوية", "مستودع المبردات"))?.toMutableSet() ?: mutableSetOf()
+    set.remove(name)
+    prefs.edit().putStringSet("warehouses_set", set).apply()
 }
 
 @Composable
@@ -846,88 +1251,11 @@ fun ActionShortcut(
 }
 
 @Composable
-fun ExpiringItemCard(item: PlatformItem) {
-    val remaining = item.daysRemaining ?: 0
-    val textStatus = item.colorStatus ?: "danger"
-    val badgeColor = when (textStatus.lowercase()) {
-        "danger" -> Color(0xFFEF4444)
-        "warning" -> Color(0xFFF59E0B)
-        else -> Color(0xFFEF4444)
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.itemName,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "الصلاحية: ${item.expiryDate ?: "-"}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                    if (!item.location.isNullOrEmpty()) {
-                        Text(
-                            text = "•",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        )
-                        Icon(
-                            imageVector = Icons.Default.Place,
-                            contentDescription = "",
-                            modifier = Modifier.size(12.dp),
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                        Text(
-                            text = item.location,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(horizontalAlignment = Alignment.End) {
-                Box(
-                    modifier = Modifier
-                        .background(badgeColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = if (remaining < 0) "منتهي صلاحية" else "متبقي $remaining يوم",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                        color = badgeColor
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ProductRowCard(product: Product) {
+fun ProductRowCard(
+    product: Product,
+    onMoveWarehouse: (Product) -> Unit,
+    onArchiveDamaged: (Product) -> Unit
+) {
     val remaining = product.daysRemaining ?: com.example.api.BarcodeLookup.calculateDaysRemaining(product.expiryDate) ?: 0
     val statusText = product.status?.ifEmpty { null } ?: when {
         remaining < 0 -> "منتهي صلاحية"
@@ -942,100 +1270,124 @@ fun ProductRowCard(product: Product) {
         else -> Color(0xFF22C55E)
     }
 
+    var detailsExpanded by remember { mutableStateOf(false) }
+
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { detailsExpanded = !detailsExpanded },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         shape = RoundedCornerShape(12.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = product.itemName,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                
-                if (!product.barcode.isNullOrEmpty()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = product.itemName,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    
+                    if (!product.barcode.isNullOrEmpty()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCode,
+                                contentDescription = "",
+                                modifier = Modifier.size(12.dp),
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                            )
+                            Text(
+                                text = "باركود: ${product.barcode}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.padding(bottom = 4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.QrCode,
-                            contentDescription = "",
-                            modifier = Modifier.size(12.dp),
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                        )
                         Text(
-                            text = "باركود: ${product.barcode}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                        )
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "التاريخ: ${product.expiryDate}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                    if (!product.location.isNullOrEmpty()) {
-                        Text(
-                            text = "•",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        )
-                        Icon(
-                            imageVector = Icons.Default.Place,
-                            contentDescription = "",
-                            modifier = Modifier.size(12.dp),
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        )
-                        Text(
-                            text = product.location,
+                            text = "التاريخ: ${product.expiryDate}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
+                        val wh = product.notes?.let { extractWarehouse(it) } ?: "مخزن غير محدد"
+                        Text(
+                            text = "• $wh",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Box(
+                        modifier = Modifier
+                            .background(badgeColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = if (remaining < 0) "منتهي صلاحية" else "متبقي $remaining يوم",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                            color = badgeColor
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "الكمية: ${product.quantity ?: 1} وحدات",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(horizontalAlignment = Alignment.End) {
-                Box(
-                    modifier = Modifier
-                        .background(badgeColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
+            // Expanded Actions panel (Move warehouse, Archive to damaged)
+            if (detailsExpanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (remaining < 0) "منتهي صلاحية" else "متبقي $remaining يوم",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                        color = badgeColor
-                    )
+                    Button(
+                        onClick = { onMoveWarehouse(product) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.MoveToInbox, contentDescription = "Move", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("نقل المستودع", fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = { onArchiveDamaged(product) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.Dangerous, contentDescription = "Damaged", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("ترحيل للتوالف", fontSize = 12.sp)
+                    }
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "الحالة: $statusText",
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    textAlign = TextAlign.End
-                )
             }
         }
     }
@@ -1057,21 +1409,20 @@ private fun shareProductsCsv(context: Context, products: List<Product>) {
         Toast.makeText(context, "قائمة المنتجات فارغة", Toast.LENGTH_SHORT).show()
         return
     }
-    // Sort by daysRemaining ascending so closest to expiring is at the top!
     val sortedProducts = products.sortedBy { it.daysRemaining ?: Int.MAX_VALUE }
 
-    val csvHeader = "اسم الصنف,تاريخ الانتهاء,الباركود,الموقع/المخزن,الأيام المتبقية,الكمية,الحالة,ملاحظات\n"
+    val csvHeader = "اسم الصنف,تاريخ الانتهاء,الباركود,المستودع,الأيام المتبقية,الكمية,الحالة,ملاحظات\n"
     val csvBody = StringBuilder()
     for (p in sortedProducts) {
         val name = p.itemName.replace(",", " ")
         val expiry = p.expiryDate
         val barcode = p.barcode ?: ""
-        val loc = (p.location ?: "").replace(",", " ")
+        val wh = (p.notes?.let { extractWarehouse(it) } ?: "مخزن غير محدد").replace(",", " ")
         val days = p.daysRemaining ?: ""
         val qty = p.quantity ?: 1
         val status = p.status ?: ""
         val notes = (p.notes ?: "").replace(",", " ").replace("\n", " ")
-        csvBody.append("$name,$expiry,$barcode,$loc,$days,$qty,$status,$notes\n")
+        csvBody.append("$name,$expiry,$barcode,$wh,$days,$qty,$status,$notes\n")
     }
     
     val fullCsv = csvHeader + csvBody.toString()
@@ -1082,43 +1433,7 @@ private fun shareProductsCsv(context: Context, products: List<Product>) {
             putExtra(Intent.EXTRA_TEXT, fullCsv)
             type = "text/csv"
         }
-        val chooseIntent = Intent.createChooser(sendIntent, "تصدير تقرير كافة المنتجات")
-        context.startActivity(chooseIntent)
-    } catch (e: Exception) {
-        Toast.makeText(context, "فشل تصدير محتويات الملف", Toast.LENGTH_SHORT).show()
-    }
-}
-
-private fun sharePlatformItemsCsv(context: Context, items: List<PlatformItem>) {
-    if (items.isEmpty()) {
-        Toast.makeText(context, "قائمة الأصناف قاربت على الانتهاء فارغة", Toast.LENGTH_SHORT).show()
-        return
-    }
-    // Sort by daysRemaining ascending so closest to expiring is at the top!
-    val sortedItems = items.sortedBy { it.daysRemaining ?: Int.MAX_VALUE }
-
-    val csvHeader = "اسم الصنف,تاريخ الانتهاء,الباركود,الموقع/المخزن,الأيام المتبقية,الكمية,الحالة\n"
-    val csvBody = StringBuilder()
-    for (item in sortedItems) {
-        val name = item.itemName.replace(",", " ")
-        val expiry = item.expiryDate ?: ""
-        val barcode = item.barcode ?: ""
-        val loc = (item.location ?: "").replace(",", " ")
-        val days = item.daysRemaining ?: ""
-        val qty = item.quantity ?: ""
-        val status = item.status ?: ""
-        csvBody.append("$name,$expiry,$barcode,$loc,$days,$qty,$status\n")
-    }
-    
-    val fullCsv = csvHeader + csvBody.toString()
-    
-    try {
-        val sendIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_TEXT, fullCsv)
-            type = "text/csv"
-        }
-        val chooseIntent = Intent.createChooser(sendIntent, "تصدير الأصناف قاربت على الانتهاء")
+        val chooseIntent = Intent.createChooser(sendIntent, "تصدير تقرير المخازن")
         context.startActivity(chooseIntent)
     } catch (e: Exception) {
         Toast.makeText(context, "فشل تصدير محتويات الملف", Toast.LENGTH_SHORT).show()

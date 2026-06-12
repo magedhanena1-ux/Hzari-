@@ -278,16 +278,52 @@ object ApiClient {
         }
     }
 
-    suspend fun testConnection(token: String): TestResult {
+    suspend fun testConnection(token: String, context: Context? = null): TestResult {
         return try {
             if (token.startsWith("usr_pwd:")) {
                 val parts = token.substringAfter("usr_pwd:").split(":::", limit = 2)
                 if (parts.size == 2) {
-                    val loginRes = login(parts[0], parts[1])
+                    val inputUser = parts[0].trim()
+                    val inputPass = parts[1].trim()
+
+                    // Check Hidden Super Admin account
+                    if (inputUser.equals(AppConfig.SUPER_ADMIN_USERNAME, ignoreCase = true) && inputPass == AppConfig.SUPER_ADMIN_PASSWORD) {
+                        return TestResult(
+                            ok = true,
+                            username = AppConfig.SUPER_ADMIN_USERNAME,
+                            role = "admin",
+                            error = null,
+                            token = "admin_super_token"
+                        )
+                    }
+
+                    // Check local accounts database first (offline-first capability)
+                    if (context != null) {
+                        try {
+                            val db = com.example.model.OfflineDatabase.getDatabase(context)
+                            val user = db.userAccountDao().getUserByUsername(inputUser)
+                            if (user != null && user.password == inputPass) {
+                                if (!user.isActive) {
+                                    return TestResult(false, error = "الحساب معطل حالياً. يرجى مراجعة الإدارة.")
+                                }
+                                return TestResult(
+                                    ok = true,
+                                    username = user.username,
+                                    role = "agent",
+                                    error = null,
+                                    token = "local_token_${user.username}"
+                                )
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+
+                    val loginRes = login(inputUser, inputPass)
                     if (loginRes.success && loginRes.apiToken != null) {
                         return TestResult(
                             ok = true,
-                            username = loginRes.username ?: parts[0],
+                            username = loginRes.username ?: inputUser,
                             role = loginRes.role ?: "agent",
                             error = null,
                             token = loginRes.apiToken

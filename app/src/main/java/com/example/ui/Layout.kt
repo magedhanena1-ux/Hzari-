@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -35,6 +36,7 @@ sealed class Screen(val route: String, val titleKey: String, val defaultTitle: S
     object History : Screen("history", "history", "السجل وبطاقات العمليات", Icons.Default.History)
     object Support : Screen("support", "support", "الدعم الفني", Icons.Default.ContactSupport)
     object Settings : Screen("settings", "settings", "الإعدادات واللغة", Icons.Default.Settings)
+    object AdminPanel : Screen("admin_panel", "admin_panel", "لوحة إدارة وحسابت المشتركين", Icons.Default.SupervisorAccount)
 
     val title: String
         get() = com.example.model.LanguageManager.getString(titleKey, defaultTitle)
@@ -55,13 +57,19 @@ fun AppLayout(
     var isServerConnected by remember { mutableStateOf(false) }
     val storedUser = remember { ApiClient.getStoredUser(context) }
 
-    // Run connection probe on startup
-    LaunchedEffect(Unit) {
+    // Subscription expirations state
+    var isSubscriptionExpired by remember { mutableStateOf(false) }
+    var remainingSubscriptionDays by remember { mutableStateOf<Int?>(null) }
+
+    // Run connection probe and subscription analysis on startup
+    LaunchedEffect(storedUser) {
         val token = ApiClient.getToken(context)
         if (!token.isNullOrEmpty()) {
-            val res = ApiClient.testConnection(token)
+            val res = ApiClient.testConnection(token, context)
             isServerConnected = res.ok
         }
+        isSubscriptionExpired = com.example.model.AppConfig.isSubscriptionExpired(context)
+        remainingSubscriptionDays = com.example.model.AppConfig.getRemainingSubscriptionDays(context)
     }
 
     // Dynamic language direction
@@ -69,207 +77,310 @@ fun AppLayout(
     val layoutDirection = if (isArabic) LayoutDirection.Rtl else LayoutDirection.Ltr
 
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            drawerContent = {
-                ModalDrawerSheet(
+        if (isSubscriptionExpired && !storedUser.username.equals(com.example.model.AppConfig.SUPER_ADMIN_USERNAME, ignoreCase = true)) {
+            // Subscription Lockout Screen View
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
                     modifier = Modifier
-                        .width(280.dp)
-                        .fillMaxHeight(),
-                    drawerContainerColor = MaterialTheme.colorScheme.surface
+                        .fillMaxWidth()
+                        .wrapContentHeight(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-                    Spacer(modifier = Modifier.height(20.dp))
-                    
-                    // Sidebar Header Banner
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 10.dp)
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        Text(
-                            text = com.example.model.LanguageManager.getString("app_name", "حذاري للرقابة والمخزون"),
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Expired License",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(64.dp)
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "انتهى اشتراك حذاري!",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.error,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "نأسف، لقد انتهت صلاحية اشتراكك الحالي في تطبيق حذاري للرقابة والمخزون. يرجى اختيار إحدى باقات التجديد لتسجيل طلب التفعيل الفوري:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        com.example.model.AppConfig.PLANS.forEach { plan ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val requestPrefilledMessage = "السلام عليكم يا إدارة حذاري، أود تقديم طلب لتجديد اشتراكي في باقة: ${plan.name} (${plan.price} ريال YER) لاسم المستخدم: ${storedUser.username}."
+                                        val uri = "https://wa.me/${com.example.model.AppConfig.SUPPORT_WHATSAPP}?text=" + android.net.Uri.encode(requestPrefilledMessage)
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri))
+                                        context.startActivity(intent)
+                                    }
+                                    .padding(vertical = 4.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(text = plan.name, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                        Text(text = "صلاحية ${plan.days} يوماً", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                    }
+                                    Text(text = "${plan.price} ريال YER", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = {
+                                ApiClient.clearToken(context)
+                                onLogout()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("تسجيل الخروج والعودة")
+                        }
+                    }
+                }
+            }
+        } else {
+            // Normal Application Sidebar Drawer and Screens
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                drawerContent = {
+                    ModalDrawerSheet(
+                        modifier = Modifier
+                            .width(280.dp)
+                            .fillMaxHeight(),
+                        drawerContainerColor = MaterialTheme.colorScheme.surface
+                    ) {
+                        Spacer(modifier = Modifier.height(20.dp))
                         
-                        // Connection dot indicator
+                        // Sidebar Header Banner
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = com.example.model.LanguageManager.getString("app_name", "حذاري للرقابة والمخزون"),
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            
+                            // Connection dot indicator
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isServerConnected) Color(0xFF22C55E) else Color(0xFFEF4444))
+                                )
+                                Text(
+                                    text = if (isServerConnected) 
+                                        com.example.model.LanguageManager.getString("connected", "متصل بالمنصة") 
+                                    else 
+                                        com.example.model.LanguageManager.getString("disconnected", "غير متصل بالمنصة"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isServerConnected) Color(0xFF22C55E) else Color(0xFFEF4444)
+                                )
+                            }
+
+                            // Show remaining subscription period countdown
+                            if (remainingSubscriptionDays != null && !storedUser.username.equals(com.example.model.AppConfig.SUPER_ADMIN_USERNAME, ignoreCase = true)) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "باقي على صلاحية الترخيص: $remainingSubscriptionDays يوماً",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = if (remainingSubscriptionDays!! <= 7) Color(0xFFEF4444) else Color(0xFF22C55E)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Navigation Links list (with dynamic AdminPanel)
+                        val items = remember(storedUser) {
+                            val list = mutableListOf(
+                                Screen.Dashboard,
+                                Screen.AddProduct,
+                                Screen.BarcodeScanner,
+                                Screen.BatchUpload,
+                                Screen.SyncLocal,
+                                Screen.History,
+                                Screen.Support,
+                                Screen.Settings
+                            )
+                            if (storedUser.username.equals(com.example.model.AppConfig.SUPER_ADMIN_USERNAME, ignoreCase = true)) {
+                                list.add(Screen.AdminPanel)
+                            }
+                            list
+                        }
+
+                        items.forEach { screen ->
+                            val selected = currentRoute == screen.route
+                            NavigationDrawerItem(
+                                label = { 
+                                    Text(
+                                        text = screen.title, 
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        fontSize = 15.sp
+                                    ) 
+                                },
+                                selected = selected,
+                                onClick = {
+                                    scope.launch { drawerState.close() }
+                                    onNavigateToRoute(screen.route)
+                                },
+                                icon = { 
+                                    Icon(
+                                        imageVector = screen.icon, 
+                                        contentDescription = screen.title,
+                                        tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    ) 
+                                },
+                                badge = {
+                                    if (screen == Screen.Settings && com.example.model.AppUpdateManager.isUpdateNotificationActive) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFEF4444))
+                                        )
+                                    }
+                                },
+                                modifier = Modifier
+                                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                                    .testTag("nav_item_${screen.route}"),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = NavigationDrawerItemDefaults.colors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = MaterialTheme.colorScheme.onPrimary,
+                                    unselectedContainerColor = Color.Transparent,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        // Drawer footer user info and Logout Button
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Spacer(modifier = Modifier.height(8.dp))
+
                         Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 12.dp)
+                                .clickable {
+                                    ApiClient.clearToken(context)
+                                    onLogout()
+                                }
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f))
+                                .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isServerConnected) Color(0xFF22C55E) else Color(0xFFEF4444))
+                            Icon(
+                                imageVector = Icons.Default.Logout,
+                                contentDescription = com.example.model.LanguageManager.getString("logout", "تسجيل الخروج"),
+                                tint = MaterialTheme.colorScheme.error
                             )
                             Text(
-                                text = if (isServerConnected) 
-                                    com.example.model.LanguageManager.getString("connected", "متصل بالمنصة") 
-                                else 
-                                    com.example.model.LanguageManager.getString("disconnected", "غير متصل بالمنصة"),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isServerConnected) Color(0xFF22C55E) else Color(0xFFEF4444)
+                                text = com.example.model.LanguageManager.getString("logout", "تسجيل الخروج"),
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.error
                             )
                         }
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
+                }
+            ) {
+                Scaffold(
+                    modifier = Modifier.fillMaxSize(),
+                    topBar = {
+                        TopAppBar(
+                            title = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Text(
+                                        text = when (currentRoute) {
+                                            Screen.Dashboard.route -> Screen.Dashboard.title
+                                            Screen.AddProduct.route -> Screen.AddProduct.title
+                                            Screen.BarcodeScanner.route -> Screen.BarcodeScanner.title
+                                            Screen.BatchUpload.route -> Screen.BatchUpload.title
+                                            Screen.SyncLocal.route -> Screen.SyncLocal.title
+                                            Screen.History.route -> Screen.History.title
+                                            Screen.Support.route -> Screen.Support.title
+                                            Screen.Settings.route -> Screen.Settings.title
+                                            Screen.AdminPanel.route -> Screen.AdminPanel.title
+                                            else -> "لوحة التحكم"
+                                        },
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 18.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
 
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Navigation Links list
-                    val items = listOf(
-                        Screen.Dashboard,
-                        Screen.AddProduct,
-                        Screen.BarcodeScanner,
-                        Screen.BatchUpload,
-                        Screen.SyncLocal,
-                        Screen.History,
-                        Screen.Support,
-                        Screen.Settings
-                    )
-
-                    items.forEach { screen ->
-                        val selected = currentRoute == screen.route
-                        NavigationDrawerItem(
-                            label = { 
-                                Text(
-                                    text = screen.title, 
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    fontSize = 15.sp
-                                ) 
-                            },
-                            selected = selected,
-                            onClick = {
-                                scope.launch { drawerState.close() }
-                                onNavigateToRoute(screen.route)
-                            },
-                            icon = { 
-                                Icon(
-                                    imageVector = screen.icon, 
-                                    contentDescription = screen.title,
-                                    tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                ) 
-                            },
-                            badge = {
-                                if (screen == Screen.Settings && com.example.model.AppUpdateManager.isUpdateNotificationActive) {
+                                    // Visual connection light bubble on header
                                     Box(
                                         modifier = Modifier
                                             .size(8.dp)
                                             .clip(CircleShape)
-                                            .background(Color(0xFFEF4444))
+                                            .background(if (isServerConnected) Color(0xFF22C55E) else Color(0xFFEF4444))
                                     )
                                 }
                             },
-                            modifier = Modifier
-                                .padding(horizontal = 12.dp, vertical = 4.dp)
-                                .testTag("nav_item_${screen.route}"),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = NavigationDrawerItemDefaults.colors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.onPrimary,
-                                unselectedContainerColor = Color.Transparent,
-                                unselectedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            navigationIcon = {
+                                IconButton(
+                                    onClick = { scope.launch { drawerState.open() } },
+                                    modifier = Modifier.testTag("hamburger_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Menu,
+                                        contentDescription = com.example.model.LanguageManager.getString("menu", "القائمة الجانبية"),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            },
+                            colors = TopAppBarDefaults.topAppBarColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                titleContentColor = MaterialTheme.colorScheme.primary
                             )
                         )
-                    }
-
-                    Spacer(modifier = Modifier.weight(1f))
-
-                     // Drawer footer user info and Logout Button
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 12.dp)
-                            .clickable {
-                                ApiClient.clearToken(context)
-                                onLogout()
-                            }
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f))
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Logout,
-                            contentDescription = com.example.model.LanguageManager.getString("logout", "تسجيل الخروج"),
-                            tint = MaterialTheme.colorScheme.error
-                        )
-                        Text(
-                            text = com.example.model.LanguageManager.getString("logout", "تسجيل الخروج"),
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
+                    },
+                    content = content
+                )
             }
-        ) {
-            Scaffold(
-                modifier = Modifier.fillMaxSize(),
-                topBar = {
-                    TopAppBar(
-                        title = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text(
-                                    text = when (currentRoute) {
-                                        Screen.Dashboard.route -> Screen.Dashboard.title
-                                        Screen.AddProduct.route -> Screen.AddProduct.title
-                                        Screen.BarcodeScanner.route -> Screen.BarcodeScanner.title
-                                        Screen.BatchUpload.route -> Screen.BatchUpload.title
-                                        Screen.SyncLocal.route -> Screen.SyncLocal.title
-                                        Screen.History.route -> Screen.History.title
-                                        Screen.Support.route -> Screen.Support.title
-                                        Screen.Settings.route -> Screen.Settings.title
-                                        else -> "لوحة التحكم"
-                                    },
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-
-                                // Visual connection light bubble on header
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isServerConnected) Color(0xFF22C55E) else Color(0xFFEF4444))
-                                )
-                            }
-                        },
-                        navigationIcon = {
-                            IconButton(
-                                onClick = { scope.launch { drawerState.open() } },
-                                modifier = Modifier.testTag("hamburger_btn")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Menu,
-                                    contentDescription = com.example.model.LanguageManager.getString("menu", "القائمة الجانبية"),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            titleContentColor = MaterialTheme.colorScheme.primary
-                        )
-                    )
-                },
-                content = content
-            )
         }
     }
 }
