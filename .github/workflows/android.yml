@@ -55,4 +55,3 @@ jobs:
       with:
         name: Hazari-App-Package
         path: "**/build/outputs/apk/debug/*.apk"
-        
