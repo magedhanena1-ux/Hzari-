@@ -2,7 +2,7 @@ name: Android CI Build
 
 on:
   push:
-    branches: [ "رئيسي", "main" ] # سيعمل التجميع تلقائياً عند الدفع لفرعك الرئيسي
+    branches: [ "رئيسي", "main" ]
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        cache: 'npm'
+        # قمنا بإلغاء سطر الكاش هنا لتفادي خطأ الـ lock file المفقود بنجاح
 
     - name: Install Dependencies
       run: npm install --legacy-peer-deps
@@ -32,21 +32,24 @@ jobs:
 
     - name: Grant execute permission for gradlew
       run: |
-        if [ -f "android/gradlew" ]; then
+        if [ -f "gradlew" ]; then
+          chmod +x gradlew
+        elif [ -f "android/gradlew" ]; then
           chmod +x android/gradlew
         fi
 
     - name: Build Android APK (Debug)
       run: |
-        if [ -d "android" ]; then
+        if [ -f "gradlew" ]; then
+          ./gradlew assembleDebug
+        elif [ -d "android" ]; then
           cd android && ./gradlew assembleDebug
         else
-          echo "مجلد الأندرويد غير موجود في المسار الرئيسي للبرنامج!" && exit 1
+          echo "مجلد الأندرويد أو ملف البناء غير موجود في المسار الرئيسي!" && exit 1
         fi
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Hazari-App-Package
-        path: android/app/build/outputs/apk/debug/app-debug.apk
-        
+        path: "**/build/outputs/apk/debug/*.apk" # بحث تلقائي ذكي عن ملف التطبيق أينما كان مساره
