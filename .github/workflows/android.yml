@@ -3,6 +3,7 @@ name: Android CI Build
 on:
   push:
     branches: [ "رئيسي", "main" ]
+  workflow_dispatch: # يتيح لك تشغيل البناء يدوياً بضغطة زر
 
 jobs:
   build:
@@ -16,13 +17,22 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        # تم إلغاء الكاش تماماً لتفادي خطأ الـ lock file المفقود
 
-    - name: Install Dependencies
+    - name: Locate Project and Install Dependencies
       run: |
-        # التأكد من وجود الملف قبل البدء لمنع توقف السيرفر
-        if [ ! -f "package.json" ]; then
-          echo "❌ خطأ: كود التطبيق غير مرفوع في هذا الفرع، يرجى رفع الملفات أولاً!" && exit 1
+        # البحث عن مجلد المشروع الذي يحتوي على package.json
+        ROOT_DIR=$(find . -name "package.json" -not -path "*/node_modules/*" -exec dirname {} \; | head -n 1)
+        
+        if [ -z "$ROOT_DIR" ]; then
+          echo "❌ خطأ فادح: لم يتم العثور على ملف package.json في أي مكان داخل المستودع!"
+          echo "يرجى التأكد من رفع ملفات مشروعك كاملة إلى جيت هوب وليس ملف الـ YAML فقط."
+          exit 1
         fi
+        
+        echo "PROJECT_PATH=$ROOT_DIR" >> $GITHUB_ENV
+        cd "$ROOT_DIR"
+        echo "✅ تم العثور على المشروع في: $ROOT_DIR. بدء تثبيت المكتبات..."
         npm install --legacy-peer-deps
 
     - name: Set up JDK 17
@@ -34,25 +44,32 @@ jobs:
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
 
-    - name: Grant execute permission for gradlew
-      run: |
-        if [ -f "android/gradlew" ]; then
-          chmod +x android/gradlew
-        elif [ -f "gradlew" ]; then
-          chmod +x gradlew
-        fi
-
     - name: Build Android APK (Debug)
       run: |
-        if [ -d "android" ]; then
-          cd android && ./gradlew assembleDebug
-        else
-          ./gradlew assembleDebug
+        cd "$PROJECT_PATH"
+        
+        # البحث عن ملف gradlew الخاص بالأندرويد وتشغيله
+        GRADLEW_FILE=$(find . -name "gradlew" -not -path "*/node_modules/*" | head -n 1)
+        
+        if [ -z "$GRADLEW_FILE" ] && [ -f "android/gradlew" ]; then
+          GRADLEW_FILE="android/gradlew"
         fi
+        
+        if [ -z "$GRADLEW_FILE" ]; then
+          echo "❌ خطأ: لم يتم العثور على ملف البناء gradlew. تأكد من وجود مجلد android سليم."
+          exit 1
+        fi
+        
+        GRADLE_DIR=$(dirname "$GRADLEW_FILE")
+        chmod +x "$GRADLEW_FILE"
+        
+        echo "🚀 بدء تجميع تطبيق حذاري من المجلد: $GRADLE_DIR"
+        cd "$GRADLE_DIR" && ./gradlew assembleDebug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Hazari-App-Package
+        name: Hazari-Final-APK
         path: "**/build/outputs/apk/debug/*.apk"
+        retention-days: 7
         
