@@ -93,7 +93,8 @@ fun DashboardPage(
                     in 11..30 -> "yellow"
                     else -> "green"
                 },
-                createdAt = null
+                createdAt = null,
+                imagePath = lp.imagePath
             )
         }
     }
@@ -101,6 +102,13 @@ fun DashboardPage(
     // Archived Damaged Products (Only damaged products)
     val damagedProducts = remember(localProductsCached) {
         localProductsCached.filter { it.isDamaged == 1 }
+    }
+
+    // Auto-trigger alerts and evaluate notifications
+    LaunchedEffect(dbProductsMapped) {
+        if (dbProductsMapped.isNotEmpty()) {
+            com.example.notification.NotificationHelper.evaluateAndNotify(context, dbProductsMapped)
+        }
     }
 
     var selectedLocation by remember { mutableStateOf<String?>(null) } // null means "All locations"
@@ -201,6 +209,7 @@ fun DashboardPage(
         prod.daysRemaining ?: com.example.api.BarcodeLookup.calculateDaysRemaining(prod.expiryDate) ?: 999
     }
     val totalCount = dbProductsMapped.size
+    val count7 = dbProductsMapped.count { getDays(it) in 0..7 }
     val count10 = dbProductsMapped.count { getDays(it) in 0..10 }
     val count20 = dbProductsMapped.count { getDays(it) in 11..20 }
     val count30 = dbProductsMapped.count { getDays(it) in 21..30 }
@@ -211,6 +220,11 @@ fun DashboardPage(
     var activeTab by remember { mutableStateOf(0) }
 
     // Dialogs States
+    var show7DaysAlertProductsDialog by remember { mutableStateOf(false) }
+    val productsExpiringIn7Days = remember(dbProductsMapped) {
+        dbProductsMapped.filter { getDays(it) in 0..7 }
+    }
+
     var showCreateWarehouseDialog by remember { mutableStateOf(false) }
     var showRenameWarehouseDialog by remember { mutableStateOf(false) }
     var newWarehouseNameInput by remember { mutableStateOf("") }
@@ -456,6 +470,66 @@ fun DashboardPage(
                                                 color = MaterialTheme.colorScheme.onPrimary
                                             )
                                         }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 7 Days Expiry Notification Banner
+                        if (count7 > 0) {
+                            item {
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("expiry_7day_notification_card")
+                                        .clickable { show7DaysAlertProductsDialog = true },
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.errorContainer
+                                    ),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .background(
+                                                    MaterialTheme.colorScheme.error.copy(alpha = 0.2f),
+                                                    shape = CircleShape
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.NotificationsActive,
+                                                contentDescription = "جرس تنبيه",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "تنبيه انتهاء الصلاحية خلال 7 أيام! 🚨",
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = "يوجد عدد $count7 من المنتجات شارفت صلاحيتها على الانتهاء خلال أسبوع أو أقل. اضغط هنا لعرض المنتجات واتخاذ الإجراء.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f)
+                                            )
+                                        }
+
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowBack, // Standard arrow back pointing to the left in RTL Arabic context
+                                            contentDescription = "عرض التفاصيل",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(24.dp)
+                                        )
                                     }
                                 }
                             }
@@ -864,6 +938,149 @@ fun DashboardPage(
     }
 
     // dialogs implementation
+
+    // Expiration alerts modal (within 7 days)
+    if (show7DaysAlertProductsDialog) {
+        AlertDialog(
+            onDismissRequest = { show7DaysAlertProductsDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.NotificationsActive,
+                    contentDescription = "",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "منتجات تنتهي خلال 7 أيام! ⚠️",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "المنتجات التالية ستنتهي صلاحيتها خلال أسبوع أو أقل. نوصي بالإسراع في صرفها أو وضع خصومات عليها لمنع تلفها.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    
+                    if (productsExpiringIn7Days.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("لا توجد منتجات تنتهي صلاحيتها في الأيام السبعة القادمة! 🎉")
+                        }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.heightIn(max = 280.dp).fillMaxWidth()
+                        ) {
+                            items(productsExpiringIn7Days) { product ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Product Image
+                                        if (!product.imagePath.isNullOrEmpty()) {
+                                            coil.compose.AsyncImage(
+                                                model = java.io.File(product.imagePath),
+                                                contentDescription = "",
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(40.dp)
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Image,
+                                                    contentDescription = "",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = product.itemName,
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                Text(
+                                                    text = "الموقع: ${product.location ?: "غير محدد"}",
+                                                    style = Modifier.alignByBaseline().let { null } ?: MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                Text(
+                                                    text = "الكمية: ${product.quantity ?: 0}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+
+                                        val days = getDays(product)
+                                        Box(
+                                            modifier = Modifier
+                                                .background(
+                                                    MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+                                                    RoundedCornerShape(4.dp)
+                                                )
+                                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = when {
+                                                    days == 0 -> "اليوم!"
+                                                    days == 1 -> "غداً"
+                                                    else -> "$days أيام"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { show7DaysAlertProductsDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("حسناً، فهمت")
+                }
+            }
+        )
+    }
 
     // 1. Create Warehouse Dialog
     if (showCreateWarehouseDialog) {
@@ -1283,9 +1500,36 @@ fun ProductRowCard(
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (!product.imagePath.isNullOrEmpty()) {
+                    coil.compose.AsyncImage(
+                        model = java.io.File(product.imagePath),
+                        contentDescription = "صورة المنتج",
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Image,
+                            contentDescription = "لا توجد صورة",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = product.itemName,

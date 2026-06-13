@@ -81,19 +81,23 @@ object NotificationHelper {
         if (!areNotificationsEnabled(context)) return
         createNotificationChannel(context)
 
-        // Categorize into 3 phases:
+        // Categorize into 4 phases:
         // Phase 1: Under 30 days remaining (21..30 days)
         // Phase 2: Under 20 days remaining (11..20 days)
-        // Phase 3: Under 10 days remaining (<= 10 days)
+        // Phase 3: Under 10 days remaining (8..10 days)
+        // Phase 7 Days Urgent Expiration Alert: (0..7 days)
         val phase1Items = mutableListOf<Product>()
         val phase2Items = mutableListOf<Product>()
         val phase3Items = mutableListOf<Product>()
+        val phase7DaysItems = mutableListOf<Product>()
 
         for (p in products) {
             val days = p.daysRemaining ?: calculateDaysRemaining(p.expiryDate) ?: continue
             if (days < 0) {
                 // Also classify expired into urgent Phase 3
                 phase3Items.add(p)
+            } else if (days <= 7) {
+                phase7DaysItems.add(p)
             } else if (days <= 10) {
                 phase3Items.add(p)
             } else if (days <= 20) {
@@ -101,6 +105,18 @@ object NotificationHelper {
             } else if (days <= 30) {
                 phase1Items.add(p)
             }
+        }
+
+        // Send Phase 7 Days (Highly Urgent!) - <= 7 days
+        if (phase7DaysItems.isNotEmpty()) {
+            val names = phase7DaysItems.joinToString(", ") { it.itemName }
+            val text = "أصناف ستنتهي صلاحيتها خلال 7 أيام أو أقل ⚠️: $names"
+            sendNotification(
+                context = context,
+                notificationId = 150,
+                title = "تنبيه انتهاء الصلاحية الوشيك (7 أيام) ⚠️",
+                content = text
+            )
         }
 
         // Send Phase 3 (Urgent!) - <= 10 days
@@ -167,6 +183,14 @@ object NotificationHelper {
             title = "المرحلة الثالثة: تنبيه خطر وحرج (10 أيام) 🚨",
             content = "صنف [خبز بر] و [عصير برتقال طازج] تبقت على صلاحيتها أقل من 10 أيام أو منتهية!"
         )
+
+        // Notification 4 - 7 Days Alert
+        sendNotification(
+            context = context,
+            notificationId = 14,
+            title = "تنبيه غاية في الأهمية: المتبقي 7 أيام أو أقل ⚠️",
+            content = "صنف [حليب طازج] و [جبنة بيضاء] ستنتهي صلاحيتها خلال أقل من 7 أيام!"
+        )
     }
 
     fun notifyOfflineMode(context: Context) {
@@ -201,7 +225,7 @@ object NotificationHelper {
             .setAutoCancel(true)
 
         try {
-            val manager = NotificationManagerCompat.from(context)
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.notify(notificationId, builder.build())
         } catch (securityException: SecurityException) {
             // Android 13+ permission not granted yet - can be skipped gracefully or caught

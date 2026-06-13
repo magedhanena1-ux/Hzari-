@@ -14,7 +14,8 @@ data class OfflineProduct(
     val status: String? = null,
     val quantity: Int? = 1,
     val notes: String? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val imagePath: String? = null
 )
 
 @Dao
@@ -55,7 +56,8 @@ data class LocalProduct(
     val damagedDate: String? = null,
     val damagedQuantity: Int = 0,
     val isSynced: Boolean = true,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val imagePath: String? = null
 )
 
 @Dao
@@ -150,7 +152,7 @@ interface UserAccountDao {
     suspend fun deleteUser(username: String)
 }
 
-@Database(entities = [OfflineProduct::class, LocalProduct::class, SubscriptionRequest::class, UserAccount::class], version = 3, exportSchema = false)
+@Database(entities = [OfflineProduct::class, LocalProduct::class, SubscriptionRequest::class, UserAccount::class], version = 4, exportSchema = false)
 abstract class OfflineDatabase : RoomDatabase() {
     abstract fun offlineProductDao(): OfflineProductDao
     abstract fun localProductDao(): LocalProductDao

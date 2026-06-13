@@ -265,7 +265,7 @@ fun AppLayout(
                                     ) 
                                 },
                                 badge = {
-                                    if (screen == Screen.Settings && com.example.model.AppUpdateManager.isUpdateNotificationActive) {
+                                    if (screen == Screen.Settings && false) {
                                         Box(
                                             modifier = Modifier
                                                 .size(8.dp)

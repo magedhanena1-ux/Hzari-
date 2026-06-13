@@ -40,6 +40,10 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import androidx.compose.ui.text.style.TextAlign
 import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -60,6 +64,52 @@ fun AddProductPage(
     var quantityStr by remember { mutableStateOf("1") }
     var notes by remember { mutableStateOf("") }
 
+    // Photo attachment states
+    var capturedImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var tempPhotoFileFile by remember { mutableStateOf<java.io.File?>(null) }
+    var tempPhotoFileUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var capturedImagePath by remember { mutableStateOf<String?>(null) }
+
+    fun createTempImageFile(ctx: Context): java.io.File {
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val storageDir = ctx.cacheDir
+        return java.io.File.createTempFile(
+            "JPEG_${timeStamp}_",
+            ".jpg",
+            storageDir
+        )
+    }
+
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) {
+            capturedImageUri = tempPhotoFileUri
+            capturedImagePath = tempPhotoFileFile?.absolutePath
+        }
+    }
+
+    val pickImageLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    val cacheFile = createTempImageFile(context)
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        cacheFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    capturedImageUri = android.net.Uri.fromFile(cacheFile)
+                    capturedImagePath = cacheFile.absolutePath
+                } catch (e: Exception) {
+                    Toast.makeText(context, "فشل نسخ الصورة: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     // Offline suggest dialog and helper
     var showOfflineSuggestDialog by remember { mutableStateOf(false) }
     var pendingOfflineProduct by remember { mutableStateOf<com.example.model.Product?>(null) }
@@ -78,7 +128,8 @@ fun AddProductPage(
                     location = product.location,
                     status = product.status,
                     quantity = product.quantity,
-                    notes = product.notes
+                    notes = product.notes,
+                    imagePath = product.imagePath
                 )
                 db.offlineProductDao().insertOfflineProduct(offlineProd)
                 
@@ -92,7 +143,8 @@ fun AddProductPage(
                     status = product.status,
                     stockQuantity = product.quantity ?: 1,
                     notes = product.notes,
-                    isSynced = false
+                    isSynced = false,
+                    imagePath = product.imagePath
                 )
                 db.localProductDao().insertProduct(localProd)
 
@@ -116,6 +168,10 @@ fun AddProductPage(
                 quantityStr = "1"
                 locationSelected = ""
                 statusSelected = "متاح"
+                capturedImageUri = null
+                capturedImagePath = null
+                tempPhotoFileUri = null
+                tempPhotoFileFile = null
             } catch (e: Exception) {
                 Toast.makeText(context, "فشل الحفظ دون اتصال: ${e.message}", Toast.LENGTH_LONG).show()
             }
@@ -695,6 +751,132 @@ fun AddProductPage(
                     )
                 }
 
+                // Photo Attachment Area
+                Column {
+                    Text(
+                        text = "صورة المنتج (اختياري)",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("product_image_card"),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (capturedImageUri != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(180.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.Black),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    AsyncImage(
+                                        model = capturedImageUri,
+                                        contentDescription = "صورة الصنف",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Fit
+                                    )
+                                    // Remove Photo Button
+                                    IconButton(
+                                        onClick = {
+                                            capturedImageUri = null
+                                            capturedImagePath = null
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(8.dp)
+                                            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(50))
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "حذف الصورة",
+                                            tint = Color.Red
+                                        )
+                                    }
+                                }
+                            } else {
+                                // Empty placeholder state
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AddAPhoto,
+                                        contentDescription = "",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                    Text(
+                                        "تصوير أو إرفاق صورة للمنتج",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "التقط صورة للصنف لمراجعة حالته العينية وتسهيل التعرف عليه.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        try {
+                                            val file = createTempImageFile(context)
+                                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                                context,
+                                                "${context.packageName}.fileprovider",
+                                                file
+                                            )
+                                            tempPhotoFileFile = file
+                                            tempPhotoFileUri = uri
+                                            takePictureLauncher.launch(uri)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "خطأ في تشغيل الكاميرا: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.PhotoCamera, contentDescription = "")
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("التقط صورة", fontSize = 13.sp)
+                                }
+
+                                OutlinedButton(
+                                    onClick = { pickImageLauncher.launch("image/*") },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.PhotoLibrary, contentDescription = "")
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("معرض الصور", fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Upload button
@@ -712,7 +894,8 @@ fun AddProductPage(
                             location = locationSelected.ifEmpty { null },
                             status = statusSelected,
                             quantity = quantity,
-                            notes = notes.trim().ifEmpty { null }
+                            notes = notes.trim().ifEmpty { null },
+                            imagePath = capturedImagePath
                         )
 
                         // Save locally FIRST (instantly) to guarantee speed and 100% offline-readiness
@@ -756,7 +939,8 @@ fun AddProductPage(
                             location = locationSelected.ifEmpty { null },
                             status = statusSelected,
                             quantity = quantity,
-                            notes = notes.trim().ifEmpty { null }
+                            notes = notes.trim().ifEmpty { null },
+                            imagePath = capturedImagePath
                         )
                         saveProductLocally(prod)
                     },

@@ -26,6 +26,12 @@ class MainActivity : FragmentActivity() {
         com.example.model.LanguageManager.init(applicationContext)
         com.example.ui.theme.ThemeConfig.loadTheme(applicationContext)
         com.example.model.AutoSyncManager.setupWorkManager(applicationContext)
+        
+        // Request POST_NOTIFICATIONS permission for Android 13+ (API 33)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+        }
+
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {

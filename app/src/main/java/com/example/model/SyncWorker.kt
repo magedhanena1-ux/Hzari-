@@ -25,7 +25,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                     location = p.location,
                     status = p.status,
                     quantity = p.quantity,
-                    notes = p.notes
+                    notes = p.notes,
+                    imagePath = p.imagePath
                 )
                 val response = ApiClient.uploadProduct(applicationContext, prod)
                 if (response.success) {
@@ -47,7 +48,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                     location = p.location,
                     status = p.status,
                     quantity = p.stockQuantity,
-                    notes = p.notes
+                    notes = p.notes,
+                    imagePath = p.imagePath
                 )
                 val response = ApiClient.uploadProduct(applicationContext, prod)
                 if (response.success) {

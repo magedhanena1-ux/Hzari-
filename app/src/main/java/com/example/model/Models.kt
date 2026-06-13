@@ -15,7 +15,8 @@ data class Product(
     val notes: String? = null,
     @Json(name = "days_remaining") val daysRemaining: Int? = null,
     @Json(name = "color_status") val colorStatus: String? = null, // "red", "yellow", "green"
-    @Json(name = "created_at") val createdAt: String? = null
+    @Json(name = "created_at") val createdAt: String? = null,
+    val imagePath: String? = null
 )
 
 @JsonClass(generateAdapter = true)

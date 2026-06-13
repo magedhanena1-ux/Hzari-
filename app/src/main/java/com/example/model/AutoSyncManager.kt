@@ -103,7 +103,8 @@ object AutoSyncManager {
                         location = item.location,
                         status = item.status,
                         quantity = item.quantity,
-                        notes = item.notes
+                        notes = item.notes,
+                        imagePath = item.imagePath
                     )
                     val result = ApiClient.uploadProduct(applicationContext, prod)
                     if (result.success) {
@@ -131,7 +132,8 @@ object AutoSyncManager {
                         location = item.location,
                         status = item.status,
                         quantity = item.stockQuantity,
-                        notes = item.notes
+                        notes = item.notes,
+                        imagePath = item.imagePath
                     )
                     val result = ApiClient.uploadProduct(applicationContext, prod)
                     if (result.success) {

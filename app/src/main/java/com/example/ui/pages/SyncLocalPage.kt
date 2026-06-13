@@ -155,7 +155,8 @@ fun SyncLocalPage(
                                 location = localItem.location,
                                 status = localItem.status,
                                 quantity = localItem.quantity,
-                                notes = localItem.notes
+                                notes = localItem.notes,
+                                imagePath = localItem.imagePath
                             )
                             
                             val response = ApiClient.uploadProduct(context, prod)

@@ -501,11 +501,13 @@ fun SettingsPage(
             com.example.model.AppUpdateManager.checkForUpdates(context)
         }
 
-        Card(
-            modifier = Modifier.fillMaxWidth().testTag("app_updates_card"),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(12.dp)
-        ) {
+        val showAppUpdateSimulation = false
+        if (showAppUpdateSimulation) {
+            Card(
+                modifier = Modifier.fillMaxWidth().testTag("app_updates_card"),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(12.dp)
+            ) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -789,6 +791,7 @@ fun SettingsPage(
                     }
                 }
             }
+        }
         }
 
         // 3. Toggles Alerts Preferences Card
